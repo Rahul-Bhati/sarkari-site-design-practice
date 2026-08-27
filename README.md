@@ -127,3 +127,4 @@ double every scrape and send every digest twice.
 Not affiliated with any government body. Summaries are AI-generated from public
 notifications and can be wrong — the original source is linked on every entry
 and is what counts.
+# sarkari-site-design-practice
