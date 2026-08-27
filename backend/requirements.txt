@@ -1,0 +1,36 @@
+# Version ranges rather than the PRD's exact pins: several of those pins
+# (resend==2.0.0, supabase==2.9.0) don't resolve on PyPI, and the scrapers need
+# a newer anthropic SDK for structured outputs. Floors are the oldest versions
+# this code is known to work with.
+
+fastapi>=0.115.0,<0.120
+uvicorn[standard]>=0.30.0,<0.40
+pydantic[email]>=2.9.0,<3
+pydantic-settings>=2.5.0,<3
+supabase>=2.9.0,<3
+# AI providers. Gemini is the default (free tier); anthropic is optional and
+# only imported when AI_PROVIDER=anthropic.
+google-genai>=1.0,<3
+anthropic>=0.69.0,<1
+httpx>=0.27.0,<0.29
+# Replays a browser TLS handshake. Required for portals behind a WAF that
+# fingerprints the ClientHello — pib.gov.in 403s httpx and headless Chromium
+# alike, but returns 200 to this. See BaseScraper.fetch_impersonated().
+curl_cffi>=0.7,<1
+beautifulsoup4>=4.12.3,<5
+lxml>=5.3.0,<7
+selectolax>=0.3.21,<0.4
+PyMuPDF>=1.24.0,<2
+apscheduler>=3.10.4,<4
+python-multipart>=0.0.12,<0.1
+resend>=2.4.0,<3
+razorpay>=1.4.2,<2
+redis>=5.0.0,<7
+sentry-sdk[fastapi]>=2.14.0,<3
+python-dotenv>=1.0.1,<2
+slowapi>=0.1.9,<0.2
+
+# Dev / test
+pytest>=8.3.0,<9
+pytest-asyncio>=0.24.0,<2
+respx>=0.21.1,<0.23

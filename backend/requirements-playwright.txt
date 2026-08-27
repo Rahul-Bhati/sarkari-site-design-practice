@@ -1,0 +1,4 @@
+# Only needed for JavaScript-rendered portals (raj_eproc and several Milestone 11
+# state sources). Install with:
+#   pip install -r requirements-playwright.txt && playwright install chromium
+playwright>=1.47,<2

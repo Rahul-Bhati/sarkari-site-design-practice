@@ -1,0 +1,34 @@
+# Local development. Supabase itself runs via the Supabase CLI
+# (`supabase start`), which brings up Postgres, Auth, Storage and Studio —
+# this file covers the services we own.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        # Playwright is only needed for JS-rendered sources; skipping it keeps
+        # local rebuilds fast.
+        INSTALL_PLAYWRIGHT: "false"
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      ENVIRONMENT: development
+      FRONTEND_URL: http://localhost:3000
+      # The scheduler is off by default locally so it doesn't hammer government
+      # portals while you work. Trigger runs by hand via /api/admin/scrape.
+      SCHEDULER_ENABLED: "false"
+      UPSTASH_REDIS_URL: redis://redis:6379
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save "" --appendonly no

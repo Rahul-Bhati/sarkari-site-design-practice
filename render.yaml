@@ -1,0 +1,55 @@
+# Render blueprint — the free-tier deployment.
+#
+# Free web services sleep after ~15 minutes of inactivity and take about a
+# minute to wake. That's why SCHEDULER_ENABLED is false here: an in-process
+# scheduler can't fire while the process is asleep. The schedule lives in
+# .github/workflows/cron.yml instead, and its requests double as the wake-up.
+#
+# Deploy: Render dashboard → New → Blueprint → point at this repo.
+# Then set the secret env vars (marked sync:false) in the dashboard.
+
+services:
+  - type: web
+    name: sarkarisaar-api
+    runtime: docker
+    plan: free
+    region: singapore # closest Render region to India
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+
+      # The schedule runs from GitHub Actions — see the note above.
+      - key: SCHEDULER_ENABLED
+        value: "false"
+
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash-lite
+      # Under the free tier's 1,000/day, leaving room for manual runs.
+      - key: AI_DAILY_REQUEST_CAP
+        value: "900"
+
+      # Set these in the Render dashboard, not here.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: API_BASE_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false

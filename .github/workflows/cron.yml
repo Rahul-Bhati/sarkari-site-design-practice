@@ -1,0 +1,103 @@
+# Scheduler for free hosting.
+#
+# APScheduler runs *in-process*, so on a host that sleeps when idle (Render's
+# free web service spins down after 15 minutes) it simply stops firing. This
+# workflow drives the same jobs from outside by calling the admin endpoints —
+# and because the request itself wakes the service, the sleeping is harmless.
+#
+# Set SCHEDULER_ENABLED=false on the host when using this, or every job runs
+# twice.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   API_BASE_URL   e.g. https://sarkarisaar-api.onrender.com
+#   ADMIN_API_KEY  the same value as the backend's ADMIN_API_KEY
+#
+# GitHub Actions cron runs in UTC and can fire several minutes late under load.
+# The IST times below are approximate on purpose — nothing here is minute-critical.
+
+name: Scheduled jobs
+
+on:
+  schedule:
+    # Scrape hourly.
+    - cron: "0 * * * *"
+    # Summarize every 15 minutes. (Every 5, as the PRD suggests, would burn
+    # through the free Actions minutes on a private repo for no benefit —
+    # scrapes only run hourly.)
+    - cron: "*/15 * * * *"
+    # Daily email digest — 07:00 IST = 01:30 UTC.
+    - cron: "30 1 * * *"
+    # Weekly email digest — Monday 07:00 IST.
+    - cron: "30 1 * * 1"
+    # Housekeeping — 01:00 IST = 19:30 UTC.
+    - cron: "30 19 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: true
+        default: scrape
+        type: choice
+        options: [scrape, process, digest-daily, digest-weekly, maintenance]
+
+concurrency:
+  group: sarkarisaar-cron
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide which job this run is
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 * * * *")   echo "job=scrape"        >> "$GITHUB_OUTPUT" ;;
+            "*/15 * * * *") echo "job=process"      >> "$GITHUB_OUTPUT" ;;
+            "30 1 * * *")  echo "job=digest-daily"  >> "$GITHUB_OUTPUT" ;;
+            "30 1 * * 1")  echo "job=digest-weekly" >> "$GITHUB_OUTPUT" ;;
+            "30 19 * * *") echo "job=maintenance"   >> "$GITHUB_OUTPUT" ;;
+            *)             echo "job=${{ inputs.job }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Wake the service
+        # A sleeping free instance takes ~60s to boot; get that out of the way
+        # before the real call, which would otherwise time out.
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+              "${{ secrets.API_BASE_URL }}/health" || true)
+            [ "$code" = "200" ] && echo "awake after ${i} attempt(s)" && exit 0
+            sleep 15
+          done
+          echo "service did not wake up"; exit 1
+
+      - name: Run ${{ steps.pick.outputs.job }}
+        env:
+          BASE: ${{ secrets.API_BASE_URL }}
+          KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: |
+          set -euo pipefail
+          case "${{ steps.pick.outputs.job }}" in
+            scrape)         path="/api/admin/scrape" ;;
+            process)        path="/api/admin/process" ;;
+            digest-daily)   path="/api/admin/send-digests?frequency=daily" ;;
+            digest-weekly)  path="/api/admin/send-digests?frequency=weekly" ;;
+            maintenance)    path="/api/admin/maintenance" ;;
+            *) echo "unknown job"; exit 1 ;;
+          esac
+
+          # 429 means a daily cap was reached — expected, not a failure.
+          code=$(curl -sS -X POST "$BASE$path" \
+            -H "X-Admin-Key: $KEY" \
+            --max-time 600 \
+            -o response.json -w "%{http_code}")
+
+          echo "HTTP $code"
+          cat response.json
+          echo
+          if [ "$code" = "429" ]; then
+            echo "::notice::Daily cap reached — nothing to do."
+            exit 0
+          fi
+          [ "$code" -lt 400 ]
