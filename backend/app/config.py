@@ -10,8 +10,14 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
 
     # AI
-    # "gemini" (free tier, the default) or "anthropic" (better summaries, paid).
-    ai_provider: str = "gemini"
+    # "groq" (free tier, fastest, the default), "gemini" (also free) or
+    # "anthropic" (better summaries, paid).
+    ai_provider: str = "groq"
+
+    # Groq — free key, no card: https://console.groq.com/keys
+    groq_api_key: str = ""
+    # gpt-oss-120b follows the schema reliably and handles Devanagari well.
+    groq_model: str = "openai/gpt-oss-120b"
 
     # Gemini — free key, no card: https://aistudio.google.com/apikey
     gemini_api_key: str = ""

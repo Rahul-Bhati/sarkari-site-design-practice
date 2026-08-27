@@ -13,10 +13,13 @@ from app.models.entry import Summary
 from app.services.ai_provider import (
     GEMINI_FREE_DAILY_REQUESTS,
     GEMINI_FREE_RPM,
+    GROQ_FREE_RPM,
     AnthropicProvider,
     GeminiProvider,
+    GroqProvider,
     PermanentAIError,
     Usage,
+    _strict_schema,
     get_provider,
 )
 from app.services.summarizer import estimate_cost_inr
@@ -76,21 +79,29 @@ class TestProviderSelection:
     def setup_method(self):
         get_provider.cache_clear()
         self._provider = settings.ai_provider
+        self._groq_key = settings.groq_api_key
         self._gemini_key = settings.gemini_api_key
         self._anthropic_key = settings.anthropic_api_key
 
     def teardown_method(self):
         settings.ai_provider = self._provider
+        settings.groq_api_key = self._groq_key
         settings.gemini_api_key = self._gemini_key
         settings.anthropic_api_key = self._anthropic_key
         get_provider.cache_clear()
 
-    def test_gemini_is_the_default(self):
-        assert settings.ai_provider == "gemini", "free tier should be the out-of-box default"
+    def test_groq_is_the_default(self):
+        assert settings.ai_provider == "groq", "free tier should be the out-of-box default"
 
     def test_unknown_provider_is_rejected_by_name(self):
         settings.ai_provider = "openai"
         with pytest.raises(PermanentAIError, match="Unknown AI_PROVIDER"):
+            get_provider()
+
+    def test_groq_without_a_key_says_where_to_get_one(self):
+        settings.ai_provider = "groq"
+        settings.groq_api_key = ""
+        with pytest.raises(PermanentAIError, match="console.groq.com"):
             get_provider()
 
     def test_gemini_without_a_key_says_where_to_get_one(self):
@@ -109,6 +120,72 @@ class TestProviderSelection:
         settings.ai_provider = "gemini"
         settings.gemini_api_key = "test-key"
         assert get_provider() is get_provider()
+
+
+class TestGroqFreeTier:
+    def setup_method(self):
+        self._key = settings.groq_api_key
+        self._model = settings.groq_model
+
+    def teardown_method(self):
+        settings.groq_api_key = self._key
+        settings.groq_model = self._model
+
+    def _provider(self, model: str | None = None) -> GroqProvider:
+        settings.groq_api_key = "test-key"
+        if model:
+            settings.groq_model = model
+        return GroqProvider()
+
+    def test_free_tier_calls_cost_nothing(self):
+        assert self._provider().cost_inr(Usage(input_tokens=9000, output_tokens=900)) == 0.0
+
+    def test_paces_calls_under_the_rate_limit(self):
+        p = self._provider("openai/gpt-oss-120b")
+        assert p.min_interval_seconds > 0
+        assert 60 / p.min_interval_seconds < GROQ_FREE_RPM["openai/gpt-oss-120b"]
+
+    def test_unknown_model_still_gets_paced(self):
+        assert self._provider("some/unlisted-model").min_interval_seconds > 0
+
+    def test_asks_for_a_strict_schema_by_default(self):
+        rf = self._provider()._response_format()
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["strict"] is True
+
+    def test_falls_back_to_json_object_with_the_schema_in_the_prompt(self):
+        p = self._provider()
+        assert "JSON Schema" not in p._system_prompt("SYS")
+        p._schema_mode = "json_object"
+        assert p._response_format() == {"type": "json_object"}
+        prompt = p._system_prompt("SYS")
+        assert prompt.startswith("SYS")
+        # Without the schema in the prompt, json_object mode returns valid JSON
+        # of entirely the wrong shape.
+        assert "summary_hi" in prompt
+
+
+class TestStrictSchema:
+    def test_every_field_is_required_even_the_optional_ones(self):
+        schema = _strict_schema(Summary.model_json_schema())
+        # Pydantic marks deadline/department optional; strict mode needs them
+        # listed anyway, nullable via anyOf.
+        assert set(schema["required"]) == set(schema["properties"])
+        assert "deadline" in schema["required"]
+
+    def test_additional_properties_are_closed_off(self):
+        schema = _strict_schema(Summary.model_json_schema())
+        assert schema["additionalProperties"] is False
+
+    def test_nested_definitions_are_rewritten_too(self):
+        schema = _strict_schema(Summary.model_json_schema())
+        key_details = schema["$defs"]["KeyDetails"]
+        assert key_details["additionalProperties"] is False
+        assert set(key_details["required"]) == set(key_details["properties"])
+
+    def test_leaves_non_object_nodes_alone(self):
+        assert _strict_schema({"type": "string"}) == {"type": "string"}
+        assert _strict_schema([{"type": "null"}]) == [{"type": "null"}]
 
 
 class TestGeminiFreeTier:

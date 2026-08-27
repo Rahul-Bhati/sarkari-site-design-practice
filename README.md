@@ -22,7 +22,7 @@ The default configuration costs nothing:
 | Frontend | Vercel Hobby | Free |
 | Database + auth | Supabase | 500MB |
 | Backend | Render free web service | Sleeps after 15 min idle |
-| **AI summaries** | **Gemini free tier** | **1,000 requests/day, no card** |
+| **AI summaries** | **Groq free tier** | **No card; per-model daily quota** |
 | Scheduler | GitHub Actions cron | Free (public repos) |
 | Cache | — | In-memory fallback; Upstash optional |
 | Email | Resend | 3,000/month |
@@ -43,8 +43,9 @@ notification.
 
 ## Quick start
 
-You need a Supabase project and a Gemini API key
-([free, no credit card](https://aistudio.google.com/apikey)).
+You need a Supabase project and a Groq API key
+([free, no credit card](https://console.groq.com/keys)). `AI_PROVIDER=gemini`
+is an equally free alternative if you'd rather use Google.
 
 **1. Database**
 
@@ -56,7 +57,7 @@ then `supabase/seed.sql` for test sources and entries.
 ```bash
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env      # fill in SUPABASE_* and GEMINI_API_KEY
+cp .env.example .env      # fill in SUPABASE_* and GROQ_API_KEY
 .venv/bin/uvicorn app.main:app --reload
 ```
 
@@ -85,7 +86,7 @@ Anything the AI scores below 0.90 confidence waits in `/admin` for review.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest    # 103 tests
+cd backend && .venv/bin/python -m pytest    # 128 tests
 cd frontend && npm run build                # type-check + build
 ```
 
