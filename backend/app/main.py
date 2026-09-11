@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -51,6 +52,27 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Admin-Key"],
 )
+
+
+@app.exception_handler(httpx.ConnectError)
+@app.exception_handler(httpx.ConnectTimeout)
+async def upstream_unreachable(request: Request, exc: Exception):
+    """Supabase (or another upstream) could not be reached at all.
+
+    Worth separating from a 500: the app is fine, its database is not, and the
+    fix is operational rather than a code change. A free-tier Supabase project
+    pauses itself after a week of inactivity and its DNS record goes with it,
+    which surfaces here as a bare `[Errno 8] nodename nor servname provided` —
+    so say what that actually means instead of leaking a stack trace.
+    """
+    log.error("upstream unreachable on %s: %s", request.url.path, exc)
+    detail = "Upstream service unavailable"
+    if not settings.is_production:
+        detail = (
+            f"Could not reach the database ({exc}). Check that SUPABASE_URL is "
+            "right and that the Supabase project is not paused or deleted."
+        )
+    return JSONResponse(status_code=503, content={"detail": detail})
 
 
 @app.exception_handler(Exception)

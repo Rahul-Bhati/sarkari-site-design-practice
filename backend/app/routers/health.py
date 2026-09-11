@@ -23,6 +23,16 @@ async def health_deep():
     except Exception as exc:
         checks["database"] = f"error: {exc}"
 
-    checks["anthropic_key"] = "set" if settings.anthropic_api_key else "missing"
-    status = "ok" if all(v == "ok" or v == "set" for v in checks.values()) else "degraded"
+    # Check the key for whichever provider is actually selected — hardcoding
+    # anthropic here reported "missing" on a perfectly healthy Groq setup.
+    provider_keys = {
+        "groq": settings.groq_api_key,
+        "gemini": settings.gemini_api_key,
+        "anthropic": settings.anthropic_api_key,
+    }
+    checks[f"{settings.ai_provider}_key"] = (
+        "set" if provider_keys.get(settings.ai_provider) else "missing"
+    )
+
+    status = "ok" if all(v in ("ok", "set") for v in checks.values()) else "degraded"
     return {"status": status, "checks": checks}

@@ -9,7 +9,7 @@ import {
   SortFilter,
   StateFilter,
 } from "@/components/feed/Filters";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { EntriesResponse, EntryFilters } from "@/types";
 
 export const revalidate = 300;
@@ -86,24 +86,38 @@ export default async function FeedPage({
 
 async function Results({ filters }: { filters: EntryFilters }) {
   let data: EntriesResponse | null = null;
-  let failed = false;
+  let failure: "unreachable" | "database" | null = null;
 
   try {
     data = await api.entries(filters, 300);
-  } catch {
-    failed = true;
+  } catch (error) {
+    // A 503 means the backend answered — it just cannot reach its database.
+    // Telling someone to start a backend that is already running sends them
+    // looking in the wrong place.
+    failure =
+      error instanceof ApiError && error.status === 503 ? "database" : "unreachable";
   }
 
-  if (failed) {
+  if (failure) {
     return (
       <div className="rounded-2xl border border-rule/30 bg-rule/5 p-10 text-center">
-        <p className="font-semibold text-ink">Could not reach the API</p>
+        <p className="font-semibold text-ink">
+          {failure === "database"
+            ? "The database is unavailable"
+            : "Could not reach the API"}
+        </p>
         <p className="mt-1.5 text-sm text-muted">
-          Check that the backend is running at{" "}
-          <code className="text-faint">
-            {process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}
-          </code>
-          .
+          {failure === "database" ? (
+            "The API is running but cannot reach Supabase. The project may be paused or deleted."
+          ) : (
+            <>
+              Check that the backend is running at{" "}
+              <code className="text-faint">
+                {process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}
+              </code>
+              .
+            </>
+          )}
         </p>
       </div>
     );
