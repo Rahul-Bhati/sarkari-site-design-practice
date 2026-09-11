@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.scrapers.base import BaseScraper, RawEntry
+from app.scrapers.sources.gem import GeMScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
 from app.scrapers.sources.ssc import SSCScraper
@@ -235,3 +236,97 @@ class TestRajEprocParsing:
     def test_detects_the_captcha_gate(self):
         assert RajasthanEProcScraper._is_captcha_gated("<p>Enter Captcha to search</p>")
         assert not RajasthanEProcScraper._is_captcha_gated(self.TABLE)
+
+
+class TestGeMParsing:
+    """GeM's docs come from Solr, so every value arrives wrapped in a list."""
+
+    DOC = {
+        "id": "9880902",
+        "b_id": [9880902],
+        "b_bid_number": ["GEM/2026/R/733024"],
+        "b_category_name": ["Procurement of Face Shield"],
+        "bd_category_name": ["Personal Protective Equipment; Face Shield"],
+        "b_total_quantity": [260],
+        "ba_official_details_minName": ["Ministry of Defence"],
+        "ba_official_details_deptName": ["Department of Military Affairs"],
+        "final_start_date_sort": ["2026-09-12T13:00:00Z"],
+        "final_end_date_sort": ["2026-09-14T15:00:00Z"],
+        "is_high_value": True,
+    }
+
+    def test_maps_a_doc_to_an_entry(self):
+        e = GeMScraper()._to_entry(self.DOC)
+        assert e is not None
+        assert e.category == "tender"
+        assert e.published_date == "2026-09-12"
+        assert e.deadline == "2026-09-14"
+        assert e.extra["bid_number"] == "GEM/2026/R/733024"
+        assert e.extra["quantity"] == 260
+
+    def test_links_to_the_bid_document(self):
+        e = GeMScraper()._to_entry(self.DOC)
+        assert e is not None
+        # GeM has no per-bid HTML page; the document is the only permalink.
+        assert e.original_url.endswith("/showbidDocument/9880902")
+        assert e.pdf_url == e.original_url
+
+    def test_joins_ministry_and_department(self):
+        e = GeMScraper()._to_entry(self.DOC)
+        assert e is not None
+        assert "Ministry of Defence" in e.department
+        assert "Department of Military Affairs" in e.department
+
+    def test_drops_the_literal_na_department(self):
+        # The API writes "NA" rather than omitting the field.
+        e = GeMScraper()._to_entry({**self.DOC, "ba_official_details_deptName": ["NA"]})
+        assert e is not None
+        assert "NA" not in e.department
+        assert e.department == "Ministry of Defence"
+
+    def test_falls_back_when_no_office_is_named(self):
+        doc = {k: v for k, v in self.DOC.items()
+               if k not in ("ba_official_details_minName", "ba_official_details_deptName")}
+        e = GeMScraper()._to_entry(doc)
+        assert e is not None
+        assert e.department == "Government e-Marketplace"
+
+    def test_prefers_the_fuller_classification_for_the_title(self):
+        e = GeMScraper()._to_entry(self.DOC)
+        assert e is not None
+        assert e.title.startswith("Personal Protective Equipment")
+
+    def test_falls_back_to_the_item_list_when_classification_is_missing(self):
+        doc = {k: v for k, v in self.DOC.items() if k != "bd_category_name"}
+        e = GeMScraper()._to_entry(doc)
+        assert e is not None
+        assert e.title.startswith("Procurement of Face Shield")
+
+    def test_raw_text_carries_the_dates_for_the_ai_layer(self):
+        e = GeMScraper()._to_entry(self.DOC)
+        assert e is not None
+        assert "2026-09-14" in e.raw_text
+        assert "Ministry of Defence" in e.raw_text
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"b_id": [1]},                       # no bid number
+            {"b_bid_number": ["GEM/1"]},         # no id
+            {},
+        ],
+    )
+    def test_skips_docs_missing_their_identifiers(self, doc):
+        assert GeMScraper()._to_entry(doc) is None
+
+    def test_tolerates_a_malformed_date(self):
+        e = GeMScraper()._to_entry({**self.DOC, "final_end_date_sort": ["not-a-date"]})
+        assert e is not None
+        assert e.deadline is None
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [(["x"], "x"), ([], None), ("x", "x"), (None, None), ([1, 2], 1)],
+    )
+    def test_unwraps_solr_single_element_lists(self, value, expected):
+        assert GeMScraper._one(value) == expected

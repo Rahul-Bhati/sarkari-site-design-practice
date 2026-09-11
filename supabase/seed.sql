@@ -9,13 +9,15 @@
 --   raj_eproc -> inactive: every tender listing on the portal is CAPTCHA-gated
 --                (see app/scrapers/sources/raj_eproc.py for the evidence and
 --                the alternatives). Flip to true once a CAPTCHA-free route exists.
---   cppp, gem -> inactive: no scraper implemented yet (Milestone 11)
+--   cppp      -> inactive: CAPTCHA-gated, same as raj_eproc. Every NIC
+--                eProcurement portal (central, UP, Maharashtra, MP) hides its
+--                tender list behind "Provide Captcha and click on Search".
 INSERT INTO sources (name, url, category, state, scraper_key, frequency_minutes, is_active) VALUES
   ('Press Information Bureau',         'https://pib.gov.in/allRel.aspx?reg=3&lang=1', 'notice', 'ALL', 'pib',        60,  true),
   ('Staff Selection Commission',       'https://ssc.gov.in',                          'naukri', 'ALL', 'ssc',       120,  true),
+  ('Government e-Marketplace',         'https://bidplus.gem.gov.in/all-bids',         'tender', 'ALL', 'gem',       120,  true),
   ('Rajasthan eProcurement',           'https://eproc.rajasthan.gov.in',              'tender', 'RJ',  'raj_eproc',  60,  false),
-  ('Central Public Procurement Portal','https://eprocure.gov.in/epublish/app',        'tender', 'ALL', 'cppp',       60,  false),
-  ('Government e-Marketplace',         'https://gem.gov.in',                          'tender', 'ALL', 'gem',       120,  false)
+  ('Central Public Procurement Portal','https://eprocure.gov.in/eprocure/app',        'tender', 'ALL', 'cppp',       60,  false)
 ON CONFLICT (scraper_key) DO NOTHING;
 
 INSERT INTO entries (

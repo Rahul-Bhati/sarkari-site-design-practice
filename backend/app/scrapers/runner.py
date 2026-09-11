@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from app.database import db
 from app.scrapers.base import BaseScraper, RawEntry
+from app.scrapers.sources.gem import GeMScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
 from app.scrapers.sources.ssc import SSCScraper
@@ -33,6 +34,7 @@ log = logging.getLogger(__name__)
 SCRAPERS: dict[str, type[BaseScraper]] = {
     "pib": PIBScraper,
     "ssc": SSCScraper,
+    "gem": GeMScraper,
     "raj_eproc": RajasthanEProcScraper,
 }
 

@@ -86,7 +86,7 @@ Anything the AI scores below 0.90 confidence waits in `/admin` for review.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest    # 128 tests
+cd backend && .venv/bin/python -m pytest    # 153 tests
 cd frontend && npm run build                # type-check + build
 ```
 
@@ -99,8 +99,21 @@ What actually works today:
 |---|---|---|
 | PIB (`pib`) | **Working** — 24 entries/run | Behind an Akamai WAF that fingerprints the TLS handshake: httpx and headless Chromium both get 403, `curl_cffi` gets 200. Uses the English edition (`?reg=3&lang=1`). |
 | SSC (`ssc`) | **Working** — JSON API | ssc.gov.in is an Angular SPA whose HTML has zero anchors, so HTML scraping cannot work. Uses the site's own public API instead. Covers Selection Post advertisements; the wider notice board needs more work. |
-| Rajasthan eProc (`raj_eproc`) | **Blocked** — inactive | Every tender listing is CAPTCHA-gated. The scraper raises rather than returning data; see the module docstring for alternatives. |
-| CPPP, GeM | Not implemented | Milestone 11. |
+| GeM (`gem`) | **Working** — 50 bids/run | `/all-bids` is a shell; the listing comes from a JSON endpoint. CSRF token arrives as the `csrf_gem_cookie` cookie and must be echoed in a field named `csrf_bd_gem_nk` — the names deliberately differ, and a mismatch is a bare 403. ~47,000 live bids; we take the newest 5 pages. |
+| Rajasthan eProc (`raj_eproc`) | **Blocked** — inactive | CAPTCHA-gated. The scraper raises rather than returning data; see the module docstring. |
+| CPPP (`cppp`) | **Blocked** — inactive | Same NIC platform as Rajasthan, same CAPTCHA gate. |
+
+**The NIC eProcurement family is a single blocker, not five.** CPPP, UP
+(`etender.up.nic.in`), Maharashtra (`mahatenders`), MP (`mptenders`) and
+Rajasthan all run the same `nicgep` software, and all five answer
+*"Provide Captcha and click on Search button to list all active tenders."*
+Solving one solves them all; until then, none of them are worth writing. That
+covers most of the PRD's Batch 1 and Batch 4.
+
+Also probed and blocked for other reasons: RRB, IBPS, eGazette and Bihar
+eProc all fail TLS certificate verification (incomplete chains). MyScheme is a
+Next.js SPA whose API returns 401 without a key. These need decisions, not just
+parsing — see `docs/SCRAPER_GUIDE.md`.
 
 `docs/SCRAPER_GUIDE.md` covers how to add a source and how to work through
 these access problems.
