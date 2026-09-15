@@ -13,11 +13,13 @@ from app.models.entry import Summary
 from app.services.ai_provider import (
     GEMINI_FREE_DAILY_REQUESTS,
     GEMINI_FREE_RPM,
-    GROQ_FREE_RPM,
+    EST_TOKENS_PER_SUMMARY,
+    GROQ_FREE_TPM,
     AnthropicProvider,
     GeminiProvider,
     GroqProvider,
     PermanentAIError,
+    TransientAIError,
     Usage,
     _strict_schema,
     get_provider,
@@ -140,13 +142,42 @@ class TestGroqFreeTier:
     def test_free_tier_calls_cost_nothing(self):
         assert self._provider().cost_inr(Usage(input_tokens=9000, output_tokens=900)) == 0.0
 
-    def test_paces_calls_under_the_rate_limit(self):
+    def test_paces_calls_inside_the_token_budget(self):
         p = self._provider("openai/gpt-oss-120b")
-        assert p.min_interval_seconds > 0
-        assert 60 / p.min_interval_seconds < GROQ_FREE_RPM["openai/gpt-oss-120b"]
+        calls_per_minute = 60 / p.min_interval_seconds
+        spend = calls_per_minute * EST_TOKENS_PER_SUMMARY
+        # The tokens/minute cap binds long before the requests/minute one, so
+        # pacing has to be derived from it or every batch 429s.
+        assert spend <= GROQ_FREE_TPM["openai/gpt-oss-120b"]
 
     def test_unknown_model_still_gets_paced(self):
         assert self._provider("some/unlisted-model").min_interval_seconds > 0
+
+    def test_retunes_from_the_rate_limit_headers(self):
+        p = self._provider("openai/gpt-oss-120b")
+        # A paid tier reports a far larger budget; pacing should open up
+        # without anyone editing the table.
+        p._retune({"x-ratelimit-limit-tokens": "300000"}, 1800)
+        assert 60 / p.min_interval_seconds * 1800 <= 300_000
+        assert p.min_interval_seconds < 1.0
+
+    def test_retune_slows_down_for_costlier_entries(self):
+        p = self._provider("openai/gpt-oss-120b")
+        before = p.min_interval_seconds
+        p._retune({"x-ratelimit-limit-tokens": "8000"}, EST_TOKENS_PER_SUMMARY * 3)
+        assert p.min_interval_seconds > before
+
+    def test_retune_survives_missing_or_junk_headers(self):
+        p = self._provider("openai/gpt-oss-120b")
+        p._retune({}, 1800)
+        assert p.min_interval_seconds > 0
+        p._retune({"x-ratelimit-limit-tokens": "not-a-number"}, 1800)
+        assert p.min_interval_seconds > 0
+
+    def test_leaves_headroom_under_the_cap(self):
+        p = self._provider("openai/gpt-oss-120b")
+        spend = 60 / p.min_interval_seconds * EST_TOKENS_PER_SUMMARY
+        assert spend < GROQ_FREE_TPM["openai/gpt-oss-120b"] * 0.95
 
     def test_asks_for_a_strict_schema_by_default(self):
         rf = self._provider()._response_format()
@@ -163,6 +194,104 @@ class TestGroqFreeTier:
         # Without the schema in the prompt, json_object mode returns valid JSON
         # of entirely the wrong shape.
         assert "summary_hi" in prompt
+
+
+class _FakeRawResponse:
+    """Mimics the async SDK's raw-response wrapper: parse() is a coroutine."""
+
+    def __init__(self, payload: str, headers: dict[str, str]):
+        self._payload = payload
+        self.headers = headers
+
+    async def parse(self):
+        import types as _t
+
+        usage = _t.SimpleNamespace(prompt_tokens=900, completion_tokens=800)
+        message = _t.SimpleNamespace(content=self._payload)
+        choice = _t.SimpleNamespace(message=message, finish_reason="stop")
+        return _t.SimpleNamespace(choices=[choice], usage=usage)
+
+
+class _FakeGroqClient:
+    def __init__(self, payload: str, headers: dict[str, str] | None = None):
+        self.payload = payload
+        self.headers = headers or {"x-ratelimit-limit-tokens": "8000"}
+        self.calls: list[dict] = []
+        outer = self
+
+        class _Create:
+            async def create(self, **kwargs):
+                outer.calls.append(kwargs)
+                return _FakeRawResponse(outer.payload, outer.headers)
+
+        class _Completions:
+            with_raw_response = _Create()
+
+        self.chat = type("_Chat", (), {"completions": _Completions()})()
+
+
+@pytest.mark.asyncio
+class TestGroqSummarizeRoundTrip:
+    """Exercises summarize() itself — the unit tests above only touch helpers,
+    so an unawaited coroutine or a renamed attribute slips straight past them.
+    """
+
+    def _provider(self, client) -> GroqProvider:
+        settings.groq_api_key = "test-key"
+        p = GroqProvider()
+        p._client = client
+        return p
+
+    async def test_returns_a_validated_summary_and_usage(self):
+        import json
+
+        client = _FakeGroqClient(json.dumps(VALID))
+        summary, usage = await self._provider(client).summarize("SYS", "USER")
+        assert summary.category == "naukri"
+        assert summary.key_details.vacancies == 8326
+        assert usage.input_tokens == 900
+        assert usage.output_tokens == 800
+
+    async def test_paces_itself_from_the_response_headers(self):
+        import json
+
+        client = _FakeGroqClient(
+            json.dumps(VALID), {"x-ratelimit-limit-tokens": "300000"}
+        )
+        p = self._provider(client)
+        before = p.min_interval_seconds
+        await p.summarize("SYS", "USER")
+        assert p.min_interval_seconds < before
+
+    async def test_truncated_output_is_retryable_not_silently_wrong(self):
+        import json
+        import types as _t
+
+        client = _FakeGroqClient(json.dumps(VALID))
+
+        class _Truncated(_FakeRawResponse):
+            async def parse(self):
+                r = await super().parse()
+                return _t.SimpleNamespace(
+                    choices=[
+                        _t.SimpleNamespace(
+                            message=r.choices[0].message, finish_reason="length"
+                        )
+                    ],
+                    usage=r.usage,
+                )
+
+        async def _create(**kwargs):
+            return _Truncated(client.payload, client.headers)
+
+        client.chat.completions.with_raw_response.create = _create
+        with pytest.raises(TransientAIError, match="truncated"):
+            await self._provider(client).summarize("SYS", "USER")
+
+    async def test_off_schema_json_is_retryable(self):
+        client = _FakeGroqClient('{"title": "only a title"}')
+        with pytest.raises(TransientAIError, match="unusable JSON"):
+            await self._provider(client).summarize("SYS", "USER")
 
 
 class TestStrictSchema:

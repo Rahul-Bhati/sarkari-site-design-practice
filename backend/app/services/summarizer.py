@@ -227,9 +227,17 @@ async def process_pending_entries(batch_size: int | None = None) -> dict[str, An
         except Exception as exc:
             report["failed"] += 1
             report["errors"].append({"entry_id": entry["id"], "error": str(exc)[:300]})
-            db().table("entries").update(
-                {"ai_attempts": (entry.get("ai_attempts") or 0) + 1}
-            ).eq("id", entry["id"]).execute()
+            try:
+                db().table("entries").update(
+                    {"ai_attempts": (entry.get("ai_attempts") or 0) + 1}
+                ).eq("id", entry["id"]).execute()
+            except Exception as bump_exc:
+                # Losing the attempt counter costs one wasted retry later.
+                # Letting it propagate would abandon the whole batch and lose
+                # the summaries already written, so it is only worth logging.
+                log.warning(
+                    "could not record failed attempt for %s: %s", entry["id"], bump_exc
+                )
             if isinstance(exc, PermanentAIError):
                 # A misconfigured key fails identically for every entry; stop
                 # rather than burning the whole batch's retries on it.

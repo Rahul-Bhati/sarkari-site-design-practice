@@ -243,16 +243,27 @@ class AnthropicProvider(SummaryProvider):
 GROQ_RATES_INR_PER_MTOK: dict[str, tuple[float, float]] = {}
 GROQ_DEFAULT_RATE = (0.0, 0.0)
 
-#: Free-tier requests/minute, used to pace calls so a batch of 10 doesn't 429
-#: halfway through. Conservative — Groq publishes these per model and changes
-#: them; anything not listed falls back to the default.
-GROQ_FREE_RPM = {
-    "openai/gpt-oss-120b": 30,
-    "openai/gpt-oss-20b": 30,
-    "llama-3.3-70b-versatile": 30,
-    "moonshotai/kimi-k2-instruct-0905": 60,
+#: Free-tier tokens/minute. This, not requests/minute, is what actually binds:
+#: a summary costs roughly EST_TOKENS_PER_SUMMARY, so 8,000 TPM allows about
+#: four calls a minute even though the request limit is far higher. Measured
+#: from x-ratelimit-limit-tokens; anything unlisted falls back to the default.
+GROQ_FREE_TPM = {
+    "openai/gpt-oss-120b": 8_000,
+    "openai/gpt-oss-20b": 8_000,
+    "llama-3.3-70b-versatile": 12_000,
+    "moonshotai/kimi-k2-instruct-0905": 10_000,
 }
-GROQ_DEFAULT_RPM = 30
+GROQ_DEFAULT_TPM = 8_000
+
+#: Prompt plus completion for a typical notification, measured against
+#: gpt-oss-120b. Only the opening estimate — real usage from the rate-limit
+#: headers takes over after the first call.
+EST_TOKENS_PER_SUMMARY = 1_800
+
+#: Leave part of the budget unused. Token accounting is approximate on both
+#: sides and landing exactly on the limit means a 429 and a ~50s SDK backoff,
+#: which costs far more than pacing slightly slower would have.
+GROQ_TPM_HEADROOM = 0.80
 
 
 def _strict_schema(schema: Any) -> Any:
@@ -290,9 +301,30 @@ class GroqProvider(SummaryProvider):
         # Set once the model tells us it can't do json_schema, so we only pay
         # for that discovery on the first call rather than every call.
         self._schema_mode = "json_schema"
-        rpm = GROQ_FREE_RPM.get(self.model, GROQ_DEFAULT_RPM)
-        # A little headroom under the published limit.
-        self.min_interval_seconds = 60 / max(rpm - 2, 1)
+        self._tpm = GROQ_FREE_TPM.get(self.model, GROQ_DEFAULT_TPM)
+        self.min_interval_seconds = self._interval_for(EST_TOKENS_PER_SUMMARY)
+
+    def _interval_for(self, tokens_per_call: float) -> float:
+        """Seconds to wait between calls to stay inside the tokens/minute budget."""
+        budget = max(self._tpm * GROQ_TPM_HEADROOM, 1.0)
+        return 60.0 * tokens_per_call / budget
+
+    def _retune(self, headers: Any, usage_tokens: int) -> None:
+        """Adapt pacing to what the API just told us about the budget.
+
+        Groq reports the real limit and what is left of it on every response,
+        so the hardcoded table above only has to be right enough for the first
+        call. Later calls pace off measured numbers, which keeps this correct
+        across models and across free/paid tiers without a code change.
+        """
+        try:
+            limit = int(headers.get("x-ratelimit-limit-tokens", 0))
+        except (TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            self._tpm = limit
+        if usage_tokens > 0:
+            self.min_interval_seconds = self._interval_for(usage_tokens)
 
     @property
     def model(self) -> str:
@@ -326,7 +358,9 @@ class GroqProvider(SummaryProvider):
 
         for _ in range(2):  # at most one retry, to switch into json_object mode
             try:
-                response = await self._client.chat.completions.create(
+                # Raw response so the rate-limit headers survive; the free tier
+                # is tight enough that pacing needs them. See _retune.
+                raw = await self._client.chat.completions.with_raw_response.create(
                     model=self.model,
                     max_completion_tokens=4096,
                     response_format=self._response_format(),
@@ -335,6 +369,8 @@ class GroqProvider(SummaryProvider):
                         {"role": "user", "content": user},
                     ],
                 )
+                # The async client's parse() is itself a coroutine.
+                response = await raw.parse()
             except groq.AuthenticationError as exc:
                 raise PermanentAIError(f"groq auth failed: {exc}") from exc
             except groq.BadRequestError as exc:
@@ -374,10 +410,12 @@ class GroqProvider(SummaryProvider):
             raise TransientAIError(f"groq returned unusable JSON: {exc}") from exc
 
         usage = response.usage
-        return parsed, Usage(
+        result = Usage(
             input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             output_tokens=getattr(usage, "completion_tokens", 0) or 0,
         )
+        self._retune(raw.headers, result.input_tokens + result.output_tokens)
+        return parsed, result
 
     def cost_inr(self, usage: Usage) -> float:
         rate_in, rate_out = GROQ_RATES_INR_PER_MTOK.get(self.model, GROQ_DEFAULT_RATE)
