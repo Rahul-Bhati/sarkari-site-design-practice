@@ -117,11 +117,18 @@ What actually works today:
 
 | Source | Status | Notes |
 |---|---|---|
-| PIB (`pib`) | **Working** — 24 entries/run | Behind an Akamai WAF that fingerprints the TLS handshake: httpx and headless Chromium both get 403, `curl_cffi` gets 200. Uses the English edition (`?reg=3&lang=1`). |
-| SSC (`ssc`) | **Working** — JSON API | ssc.gov.in is an Angular SPA whose HTML has zero anchors, so HTML scraping cannot work. Uses the site's own public API instead. Covers Selection Post advertisements; the wider notice board needs more work. |
-| GeM (`gem`) | **Working** — 50 bids/run | `/all-bids` is a shell; the listing comes from a JSON endpoint. CSRF token arrives as the `csrf_gem_cookie` cookie and must be echoed in a field named `csrf_bd_gem_nk` — the names deliberately differ, and a mismatch is a bare 403. ~47,000 live bids; we take the newest 5 pages. |
+| NTA (`nta`) | **Working** — 331 entries | `/NoticeBoardArchive`, capped at 12 months of a ~1,900-row archive. Every anchor reads "Read More", so titles come from the row, and dates from the `Notice_YYYYMMDDHHMMSS.pdf` filename. JEE, NEET, UGC-NET, CUET and CMAT. |
+| SBI (`sbi`) | **Working** — 76 entries | `/web/careers/current-openings`. Two traps: a blinking span inside the title, and a first anchor whose text is the file size ("English (1 MB)"). Only 8 carry deadlines, and that is correct — SBI lists a recruitment through its whole lifecycle. |
+| IBPS CRP (`ibps_crp`) | **Working** — 20 entries | `/index.php/crp-updates/`. Bank exam notifications, corrigenda, vacancy tables. Needs the AIA certificate fix. |
+| IBPS Recruitment (`ibps_recruitment`) | **Working** — 10 entries | `/index.php/recruitment/`. Hiring IBPS runs for other public bodies (BOB, BOI, MECL, RCF, PFRDA), every row with an open and close date. |
+| RRB (`rrb_secunderabad`) | **Working** — 112 entries | The 21 boards are consolidating onto `rrb.indianrailways.gov.in/<board>`, which serves identical markup for every board. Only Secunderabad is registered: a CEN is a national notice, so all 21 would mean 21 copies of each. Adding a board is one line. |
+| GeM (`gem`) | **Working** — ~50 bids/run | `/all-bids` is a shell; the listing comes from a JSON endpoint. CSRF token arrives as the `csrf_gem_cookie` cookie and must be echoed in a field named `csrf_bd_gem_nk` — the names deliberately differ, and a mismatch is a bare 403. ~47,000 live bids; we take the newest 5 pages. |
+| SSC (`ssc`) | **Working, but thin** — 1 entry | ssc.gov.in is an Angular SPA whose HTML has zero anchors, so HTML scraping cannot work; the site's own public API is used instead. That API lists only 11 Selection Post advertisements going back to 2019, and just one falls inside the 400-day window. Not a fault — but SSC's wider notice board is still uncovered. |
+| PIB (`pib`) | **Degraded** — needs a fix | The Akamai bypass still works (`curl_cffi` gets 126 KB where httpx gets 403), but `allRel.aspx` now carries only 1 press-release anchor among 125, so the scraper returns a navigation label instead of a release. The release list is no longer server-rendered on that page. |
+| TNPSC | **Not built** — stale | Parses cleanly (293 rows) but has zero open and zero recently-closed recruitments; only one row carries a 2026 date. Structurally viable, editorially dead. |
 | Rajasthan eProc (`raj_eproc`) | **Blocked** — inactive | CAPTCHA-gated. The scraper raises rather than returning data; see the module docstring. |
 | CPPP (`cppp`) | **Blocked** — inactive | Same NIC platform as Rajasthan, same CAPTCHA gate. |
+| UPSC | **Blocked** | Returns 102,812 bytes for every URL, including paths that do not exist — a catch-all JS shell that never 404s. |
 
 **The NIC eProcurement family is a single blocker, not five.** CPPP, UP
 (`etender.up.nic.in`), Maharashtra (`mahatenders`), MP (`mptenders`) and
@@ -130,10 +137,18 @@ Rajasthan all run the same `nicgep` software, and all five answer
 Solving one solves them all; until then, none of them are worth writing. That
 covers most of the PRD's Batch 1 and Batch 4.
 
-Also probed and blocked for other reasons: RRB, IBPS, eGazette and Bihar
-eProc all fail TLS certificate verification (incomplete chains). MyScheme is a
-Next.js SPA whose API returns 401 without a key. These need decisions, not just
-parsing — see `docs/SCRAPER_GUIDE.md`.
+**Incomplete certificate chains are fixed, not bypassed.** IBPS, eGazette and
+Bihar eProc omit an intermediate certificate, so Python rejects them where a
+browser recovers by following the leaf's Authority Information Access URI.
+`app/scrapers/utils/tls.py` does the same thing, and verification stays fully
+on. RRB Chandigarh's mismatch turned out to be `www.rrbcdg.gov.in` only — the
+apex domain verifies — so it was never really blocked. A test fails the build
+if certificate verification is ever switched off anywhere under `app/`.
+
+Still blocked for other reasons: MyScheme is a Next.js SPA whose API returns
+401 without a key. eGazette is reachable but belongs to the `rule` category,
+which is a later batch. These need decisions, not just parsing — see
+`docs/SCRAPER_GUIDE.md`.
 
 `docs/SCRAPER_GUIDE.md` covers how to add a source and how to work through
 these access problems.

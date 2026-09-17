@@ -59,14 +59,25 @@ import sys
 sys.path.insert(0, "backend")
 from app.database import db
 
-# The seed rows are the ones whose permalinks were invented for the fixture.
-FAKE = ("/bid/GEM-2026-B-", "eproc.rajasthan.gov.in/tender/", "example.gov.in")
-rows = db().table("entries").select("id,original_url").execute().data or []
-doomed = [r["id"] for r in rows
-          if any(f in (r.get("original_url") or "") for f in FAKE)]
+# Every seed row carries content_hash='seed_hash_NNNN', which a real scraper can
+# never produce — a real hash is 64 hex characters from sha256.
+#
+# This used to match invented URL substrings instead, and that was quietly
+# wrong twice over: it caught only 3 of the 19 seed rows, and it could not have
+# caught the rest safely anyway. The fabricated PIB entries use
+# `pib.gov.in/PressReleasePage.aspx?PRID=...`, which is exactly the shape of a
+# genuine PIB permalink, so a pattern wide enough to remove them would also
+# have deleted real press releases.
+SEED_HASH_PREFIX = "seed_hash_"
+
+doomed = [r["id"] for r in (
+    db().table("entries").select("id").like(
+        "content_hash", f"{SEED_HASH_PREFIX}%").execute().data or [])]
+kept = (db().table("entries").select("id", count="exact").execute().count or 0) - len(doomed)
+
 for i in range(0, len(doomed), 50):
     db().table("entries").delete().in_("id", doomed[i:i + 50]).execute()
-print(f"    removed {len(doomed)} seed entries, kept {len(rows) - len(doomed)} real ones")
+print(f"    removed {len(doomed)} seed entries, kept {kept} real ones")
 PY
 fi
 

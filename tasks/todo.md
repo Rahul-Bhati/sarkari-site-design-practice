@@ -85,14 +85,41 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
         defers to a later batch. The AIA fix reaches it when that batch happens.
   - [x] URL spaces escaped in the base (RRB writes `category=Application (Special
         Notice)` raw); NTA, SBI and both IBPS sources verified unchanged.
-- [ ] **Task 8 — Activate and verify end to end**
-  - [ ] `UPDATE sources SET is_active = true` — editing `seed.sql` is not enough
-        (`ON CONFLICT DO NOTHING`); this is how the GeM row was missed
-  - [ ] `./scripts/real-data.sh` completes with entries from every new source
-  - [ ] Browser pass over `/feed?category=naukri`
-  - [ ] README source table updated, including what stayed blocked
+- [x] **Task 8 — Activate and verify end to end**
+  - [x] All five new sources have `sources` rows and `is_active = true`, inserted
+        deliberately rather than via `seed.sql`'s `ON CONFLICT DO NOTHING`
+  - [x] Full `run_all`: **8/8 scrapers succeeded**, 50 new entries, and the
+        already-imported sources correctly returned 0 new / all duplicate
+  - [x] Browser pass over `/feed?category=naukri` — real entry rendering with a
+        working deadline badge and source attribution
+  - [x] README source table rewritten: 6 working, 1 thin, 1 degraded, 4 blocked
+  - [x] Fixed `real-data.sh --purge`, which matched 3 of 19 seed rows and could
+        not have matched the rest safely (fake PIB URLs are shaped exactly like
+        real ones). Now keys on `content_hash LIKE 'seed_hash_%'`, which no real
+        scraper can produce.
 
-- [ ] **Checkpoint C** — all criteria met; real job notifications live.
+- [ ] **Checkpoint C** — partially met, blocked on a provider quota, not on code.
+  - [x] Scrapers: all 8 green, 691 entries collected
+  - [x] Pipeline proven for the new sources — an IBPS recruitment entry
+        summarised at 0.95 confidence, auto-approved, and is live in the feed
+  - [ ] **Blocked: Groq free tier is 200,000 tokens/day and it is spent.**
+        ~490 entries stay pending until the window resets. The app's guards are
+        requests/day (900, only ~180 used) and rupees — neither models tokens,
+        so it thought it had headroom while the real budget was gone. At ~1,800
+        tokens a summary the true ceiling is ~110/day.
+  - [ ] Decide whether to purge the 19 fabricated seed entries (see below)
+
+## Follow-ups this milestone surfaced
+
+- [ ] **Add a token-per-day guard** so the summariser stops cleanly instead of
+      burning retries against 429s. `ai_daily_request_cap` is the wrong unit.
+- [ ] **PIB is degraded** — the Akamai bypass still works (126 KB fetched), but
+      `allRel.aspx` now has 1 press-release anchor among 125, so the scraper
+      returns a navigation label as an entry. The list is no longer
+      server-rendered there.
+- [ ] **SSC is thin, not broken** — its API lists 11 Selection Post
+      advertisements total, one inside the 400-day window. The wider SSC notice
+      board is still uncovered.
 
 ## Known blocked (do not attempt)
 
