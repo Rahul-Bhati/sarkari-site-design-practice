@@ -123,3 +123,67 @@ print(asyncio.run(MyPortalScraper().scrape())[:3])
 scraper returning 0 entries for three runs usually means the portal was
 redesigned — re-run the diagnosis above from step 1, since blocks get added far
 more often than layouts change.
+
+## Source survey — September 2026
+
+Probed live rather than assumed. Two patterns recur and are worth recognising
+before spending an afternoon on a portal.
+
+### Pattern 1: one blocker can hide behind many domains
+
+CPPP, UP, Maharashtra, MP and Rajasthan eProcurement look like five sources.
+They run the same NIC `nicgep` software and all answer *"Provide Captcha and
+click on Search button to list all active tenders."* Solving one solves all of
+them; until then none is worth writing.
+
+The inverse also holds: the twenty-one RRB regional boards look like one source
+and are not. Bhubaneswar returns 166 anchors, Secunderabad 1,826, Patna 523,
+with different markup each. There is no shared adapter to write. RRB
+Secunderabad's own notice board says the boards are migrating to a "new unified
+common website" — worth re-checking later, since that would create the
+multiplier that does not exist today.
+
+### Pattern 2: a 200 does not mean a page
+
+**Check what a deliberately wrong URL returns.** Every `upsc.gov.in` path
+serves HTTP 200 with exactly 102,812 bytes — including
+`/this-path-does-not-exist-12345`. UPSC never 404s and renders its content
+client-side, so a scraper cannot tell a real listing from a typo. Without this
+check you get a scraper that silently returns nothing and a source that looks
+merely empty rather than broken.
+
+```bash
+# Run this before writing any selector.
+for p in "" "/real-looking-path" "/definitely-not-a-page-99999"; do
+  curl -s -o /dev/null -w "%{http_code} %{size_download} $p\n" "https://site.gov.in$p"
+done
+```
+
+Identical sizes across all three means the content is not in the HTML.
+
+### Missing TLS intermediates
+
+IBPS and eGazette fail certificate verification, but their roots (GlobalSign,
+Let's Encrypt) are legitimate — the servers simply omit the intermediate.
+Browsers recover by following the leaf certificate's Authority Information
+Access "CA Issuers" URI. Fetch that intermediate, add it to certifi's roots, and
+verification passes normally. **Do not reach for `verify=False`**; it is never
+the right fix and it hides genuine problems, such as RRB Chandigarh, whose
+certificate is invalid for its own hostname and which therefore stays unreached.
+
+### Findings
+
+| Source | Status | Listing page and selector |
+|---|---|---|
+| TNPSC | **viable** | `/English/Notification.aspx`, `table tr` — 291 rows. Columns: S.No, notification number, post name, registration open/close, exam date. Real recruitment with deadlines. |
+| SBI | **viable** | `/web/careers/current-openings`, `div.card` — 42 rows of recruitment titles; apply windows appear as "APPLY ONLINE (16.09.2026 to 06.10.2026)" and filenames carry `DDMMYYYY`. |
+| RRB Secunderabad | **viable** | `/archive_type/employment-notices/`, `div.card` — 35 rows, mostly CEN updates and results. |
+| UPSC | **blocked** | Catch-all JS shell, never 404s. Needs Playwright. |
+| NTA | **working** | `/NoticeBoardArchive`, `table tr` — see `sources/nta.py`. |
+| IBPS, eGazette | reachable | Need the AIA intermediate fix; listing pages not yet found. |
+| RRB Chandigarh | **blocked** | Certificate invalid for its own hostname. |
+| SEBI, NCS, rrbapply, CBIC, joinindianarmy, RBI careers | **blocked** | CAPTCHA or client-rendered. |
+
+Verified reachable but not yet built, for a later batch: RBI notifications (698
+anchors) and RBI press releases (804) for `rule`, Income Tax communications
+(needs `fetch_impersonated`), and india.gov.in schemes for `yojana`.

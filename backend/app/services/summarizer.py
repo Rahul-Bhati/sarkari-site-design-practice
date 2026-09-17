@@ -162,7 +162,12 @@ async def summarize(entry: dict[str, Any]) -> tuple[Summary, Usage]:
     raise TransientAIError(f"summarize failed after {MAX_ATTEMPTS} attempts: {last_error}")
 
 
-TRUSTED_SOURCES = {"pib", "ssc", "cppp", "gem"}
+#: Sources whose parsing is reliable enough to publish without a human reading
+#: every entry. Anything not named here is held for review no matter how
+#: confident the model was, so **adding a scraper means adding it here too** —
+#: forgetting sent 331 NTA entries to the review queue at confidence 0.95.
+#: `test_trusted_sources_are_real_scrapers` guards the typo case.
+TRUSTED_SOURCES = {"pib", "ssc", "gem", "nta"}
 
 
 def _check_caps() -> tuple[float, int]:

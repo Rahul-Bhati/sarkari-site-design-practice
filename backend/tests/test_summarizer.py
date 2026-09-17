@@ -417,3 +417,26 @@ class TestCostEstimateHelper:
 
     def test_resolves_anthropic_models(self):
         assert estimate_cost_inr("claude-sonnet-5", 1_000_000, 0) == pytest.approx(264.0)
+
+
+class TestTrustedSources:
+    """The auto-approve allowlist is easy to forget when adding a scraper."""
+
+    def test_trusted_sources_are_real_scrapers(self):
+        from app.scrapers.runner import SCRAPERS
+        from app.services.summarizer import TRUSTED_SOURCES
+        unknown = TRUSTED_SOURCES - set(SCRAPERS)
+        assert not unknown, f"trusted but not registered scrapers: {unknown}"
+
+    def test_every_registered_scraper_has_a_trust_decision(self):
+        # Not every scraper must be trusted, but a new one silently defaulting
+        # to "held for review" is how 331 NTA entries piled up in the queue at
+        # confidence 0.95. Forcing the decision here makes it deliberate.
+        from app.scrapers.runner import SCRAPERS
+        from app.services.summarizer import TRUSTED_SOURCES
+        UNTRUSTED_BY_DESIGN = {"raj_eproc"}  # CAPTCHA-blocked, never returns data
+        undecided = set(SCRAPERS) - TRUSTED_SOURCES - UNTRUSTED_BY_DESIGN
+        assert not undecided, (
+            f"scrapers with no trust decision: {undecided}. Add to TRUSTED_SOURCES "
+            "in summarizer.py, or to UNTRUSTED_BY_DESIGN here."
+        )
