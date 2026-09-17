@@ -11,7 +11,7 @@ import asyncio
 import html
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from app.config import settings
@@ -36,8 +36,19 @@ MAX_ENTRIES_PER_DIGEST = 25
 LOOKBACK = {"daily": timedelta(days=1), "weekly": timedelta(days=7), "instant": timedelta(hours=1)}
 
 
+#: Every deadline we publish is an Indian government date, and every reader is
+#: in India. Counting "days left" in UTC is wrong for the 5h30m each day when
+#: the UTC date trails IST: a notice closing today reads "1 day left", and one
+#: that closed today still shows a badge instead of none.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _today_ist() -> date:
+    return datetime.now(IST).date()
 
 
 def new_token() -> str:
@@ -124,7 +135,7 @@ def _deadline_badge(deadline: str | None) -> str:
     if not deadline:
         return ""
     try:
-        days = (datetime.fromisoformat(deadline).date() - _now().date()).days
+        days = (datetime.fromisoformat(deadline).date() - _today_ist()).days
     except ValueError:
         return ""
     if days < 0:

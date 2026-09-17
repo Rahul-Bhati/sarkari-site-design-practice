@@ -6,6 +6,7 @@ import pytest
 
 from app.scrapers.base import BaseScraper, RawEntry
 from app.scrapers.sources.gem import GeMScraper
+from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
 from app.scrapers.sources.ssc import SSCScraper
@@ -330,3 +331,125 @@ class TestGeMParsing:
     )
     def test_unwraps_solr_single_element_lists(self, value, expected):
         assert GeMScraper._one(value) == expected
+
+
+class TestNTAParsing:
+    """NTA's anchors all read 'Read More' — the title lives in the row."""
+
+    ROW = """
+    <table>
+      <tr><th>#</th><th>Notice Title</th><th>Attachement</th></tr>
+      <tr><td>1</td><td>Declaration of results of UGC-NET June 2026 Exam</td>
+          <td><a href="/Download/Notice/Notice_20260918000302.pdf">Read More</a></td></tr>
+    </table>
+    """
+
+    def _html(self, *rows: str) -> str:
+        return "<table>" + "".join(rows) + "</table>"
+
+    def _row(self, title: str, href: str, index: int = 1) -> str:
+        return (f'<tr><td>{index}</td><td>{title}</td>'
+                f'<td><a href="{href}">Read More</a></td></tr>')
+
+    @staticmethod
+    def _stamp(days_ago: int, prefix: str = "Notice_") -> str:
+        from datetime import date, timedelta
+        d = date.today() - timedelta(days=days_ago)
+        return f"/Download/Notice/{prefix}{d.strftime('%Y%m%d')}120000.pdf"
+
+    def test_parses_a_row_into_an_entry(self):
+        rows = NTAScraper._parse(self.ROW)
+        assert len(rows) == 1
+        e = NTAScraper()._to_entry(rows[0])
+        assert e.category == "naukri"
+        assert e.state == "ALL"
+        assert e.department == "National Testing Agency"
+        assert e.published_date == "2026-09-18"
+        assert e.original_url.startswith("https://www.nta.ac.in/")
+        assert e.pdf_url == e.original_url
+
+    def test_title_comes_from_the_row_not_the_anchor(self):
+        rows = NTAScraper._parse(self.ROW)
+        # Anchor text is "Read More" on every single link; an anchor-driven
+        # scraper produces 1,891 identically-titled entries.
+        assert "Read More" not in rows[0]["title"]
+        assert rows[0]["title"] == "Declaration of results of UGC-NET June 2026 Exam"
+
+    def test_strips_the_leading_row_index(self):
+        rows = NTAScraper._parse(self._html(
+            self._row("Public Notice for CUET-UG 2026", "/Download/Notice/Notice_20260101120000.pdf", index=42)
+        ))
+        assert rows[0]["title"] == "Public Notice for CUET-UG 2026"
+
+    @pytest.mark.parametrize("prefix", ["Notice_", ""])
+    def test_reads_both_filename_date_formats(self, prefix):
+        # Files before ~2020 are a bare YYYYMMDDHHMMSS.pdf. Treating those as
+        # undated let 2019 notices past the age cap.
+        url = f"https://www.nta.ac.in/Download/Notice/{prefix}20190724190100.pdf"
+        assert NTAScraper._date_from_url(url) == "2019-07-24"
+
+    def test_undated_filename_yields_no_date(self):
+        url = "https://www.nta.ac.in/Download/Notice/PressReleaseCMAT.pdf"
+        assert NTAScraper._date_from_url(url) is None
+
+    def test_impossible_timestamp_is_absent_rather_than_wrong(self):
+        url = "https://www.nta.ac.in/Download/Notice/Notice_20261332120000.pdf"
+        assert NTAScraper._date_from_url(url) is None
+
+    def test_ignores_rows_without_a_pdf_link(self):
+        html = self._html(
+            '<tr><td>1</td><td>Some heading</td><td><a href="/about">Read More</a></td></tr>',
+            self._row("A real notice about the UGC-NET exam", "/Download/Notice/Notice_20260101120000.pdf", 2),
+        )
+        assert len(NTAScraper._parse(html)) == 1
+
+    def test_drops_rows_whose_title_is_too_short(self):
+        html = self._html(self._row("PDF", "/Download/Notice/Notice_20260101120000.pdf"))
+        assert NTAScraper._parse(html) == []
+
+    def test_collapses_duplicate_urls(self):
+        href = "/Download/Notice/Notice_20260101120000.pdf"
+        html = self._html(self._row("Notice about the CUET examination", href, 1),
+                          self._row("Notice about the CUET examination", href, 2))
+        assert len(NTAScraper._parse(html)) == 1
+
+    # --- age cap -----------------------------------------------------
+
+    def test_keeps_recent_rows(self):
+        rows = [{"title": "t", "url": self._stamp(d)} for d in (1, 10, 100, 300)]
+        assert NTAScraper._within_age_cap(rows) == rows
+
+    def test_cuts_the_tail_once_past_the_cap(self):
+        rows = [{"title": "t", "url": self._stamp(d)}
+                for d in (1, 10, 400, 500, 600, 700)]
+        kept = NTAScraper._within_age_cap(rows)
+        assert len(kept) == 2, "everything from the first sustained old run is dropped"
+
+    def test_one_stray_old_date_does_not_truncate_the_run(self):
+        # A single mis-stamped filename must not discard the whole archive.
+        rows = [{"title": "t", "url": self._stamp(d)}
+                for d in (1, 5000, 2, 3, 4)]
+        assert len(NTAScraper._within_age_cap(rows)) == 5
+
+    def test_undated_rows_in_the_tail_are_cut_with_it(self):
+        # Pre-2020 notices have no timestamp at all and sit at the very end;
+        # judging them individually let them bypass the cap entirely.
+        rows = ([{"title": "t", "url": self._stamp(d)} for d in (1, 2)]
+                + [{"title": "t", "url": self._stamp(d)} for d in (400, 500, 600)]
+                + [{"title": "old", "url": "/Download/Notice/PressReleaseCMAT.pdf"}])
+        kept = NTAScraper._within_age_cap(rows)
+        assert len(kept) == 2
+        assert all("PressRelease" not in r["url"] for r in kept)
+
+    def test_undated_rows_near_the_top_are_kept(self):
+        # A future rename shows up here; losing new notices silently is worse
+        # than carrying a few undated ones.
+        rows = [{"title": "t", "url": "/Download/Notice/SomeNewFormat.pdf"},
+                {"title": "t", "url": self._stamp(1)}]
+        assert len(NTAScraper._within_age_cap(rows)) == 2
+
+    def test_raw_text_carries_the_title_and_date_for_the_ai_layer(self):
+        e = NTAScraper()._to_entry(NTAScraper._parse(self.ROW)[0])
+        assert "UGC-NET" in e.raw_text
+        assert "2026-09-18" in e.raw_text
+        assert "National Testing Agency" in e.raw_text

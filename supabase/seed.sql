@@ -16,6 +16,7 @@ INSERT INTO sources (name, url, category, state, scraper_key, frequency_minutes,
   ('Press Information Bureau',         'https://pib.gov.in/allRel.aspx?reg=3&lang=1', 'notice', 'ALL', 'pib',        60,  true),
   ('Staff Selection Commission',       'https://ssc.gov.in',                          'naukri', 'ALL', 'ssc',       120,  true),
   ('Government e-Marketplace',         'https://bidplus.gem.gov.in/all-bids',         'tender', 'ALL', 'gem',       120,  true),
+  ('National Testing Agency',          'https://www.nta.ac.in/NoticeBoardArchive',    'naukri', 'ALL', 'nta',       180,  true),
   ('Rajasthan eProcurement',           'https://eproc.rajasthan.gov.in',              'tender', 'RJ',  'raj_eproc',  60,  false),
   ('Central Public Procurement Portal','https://eprocure.gov.in/eprocure/app',        'tender', 'ALL', 'cppp',       60,  false)
 ON CONFLICT (scraper_key) DO NOTHING;
