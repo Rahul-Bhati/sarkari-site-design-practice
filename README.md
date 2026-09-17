@@ -52,11 +52,19 @@ is an equally free alternative if you'd rather use Google.
 Run the migrations in order in the Supabase SQL editor (`supabase/migrations/001…008`),
 then `supabase/seed.sql` for test sources and entries.
 
+Or just run `./scripts/dev-setup.sh`, which does all of steps 2 and 3 and then
+lists whichever secrets are still blank.
+
 **2. Backend**
+
+Use Python 3.13 (or 3.12 — what the Dockerfile ships). On 3.14 there is no
+prebuilt `cryptography` wheel yet, so pip drops to compiling it from Rust and
+the install fails on most machines. `backend/.python-version` pins this for
+pyenv; `python3 -m venv` ignores it, so name the interpreter explicitly:
 
 ```bash
 cd backend
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env      # fill in SUPABASE_* and GROQ_API_KEY
 .venv/bin/uvicorn app.main:app --reload
 ```
@@ -75,6 +83,18 @@ npm run dev
 App on http://localhost:3000.
 
 **4. Fetch and summarise some real entries**
+
+```bash
+./scripts/real-data.sh --purge
+```
+
+`--purge` deletes the seed rows first, so what you are left with is only what
+the scrapers actually pulled from the government portals — the seed data is
+invented and its URLs do not resolve. The script scrapes every active source,
+then loops `/api/admin/process` until the queue drains, because Groq's free
+tier caps tokens per minute and one call only summarises ten entries.
+
+By hand, if you prefer:
 
 ```bash
 curl -X POST localhost:8000/api/admin/scrape -H "X-Admin-Key: $ADMIN_API_KEY"
