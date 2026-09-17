@@ -167,7 +167,7 @@ async def summarize(entry: dict[str, Any]) -> tuple[Summary, Usage]:
 #: confident the model was, so **adding a scraper means adding it here too** —
 #: forgetting sent 331 NTA entries to the review queue at confidence 0.95.
 #: `test_trusted_sources_are_real_scrapers` guards the typo case.
-TRUSTED_SOURCES = {"pib", "ssc", "gem", "nta"}
+TRUSTED_SOURCES = {"pib", "ssc", "gem", "nta", "sbi"}
 
 
 def _check_caps() -> tuple[float, int]:

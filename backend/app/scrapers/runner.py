@@ -25,6 +25,7 @@ from app.scrapers.sources.gem import GeMScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
+from app.scrapers.sources.sbi import SBIScraper
 from app.scrapers.sources.ssc import SSCScraper
 from app.scrapers.utils.dedup import existing_hashes
 
@@ -37,6 +38,7 @@ SCRAPERS: dict[str, type[BaseScraper]] = {
     "ssc": SSCScraper,
     "gem": GeMScraper,
     "nta": NTAScraper,
+    "sbi": SBIScraper,
     "raj_eproc": RajasthanEProcScraper,
 }
 

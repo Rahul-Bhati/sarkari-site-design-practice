@@ -9,6 +9,7 @@ from app.scrapers.sources.gem import GeMScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
+from app.scrapers.sources.sbi import SBIScraper
 from app.scrapers.sources.ssc import SSCScraper
 
 
@@ -453,3 +454,128 @@ class TestNTAParsing:
         assert "UGC-NET" in e.raw_text
         assert "2026-09-18" in e.raw_text
         assert "National Testing Agency" in e.raw_text
+
+
+class TestSBIParsing:
+    """SBI cards hide two traps: a nested span inside the title, and a first
+    anchor whose text is the file size rather than the post name."""
+
+    CARD = """
+    <div class="card">
+      <div class="col-md-8 text-uppercase">
+        <p>ENGAGEMENT OF SPECIALIST CADRE OFFICERS ON CONTRACT BASIS
+           <span class="text_blink">(Apply Online from 16.09.2026 to 06.10.2026)</span></p>
+        <p>ADVERTISEMENT NO: CRPD/SCO/2026-27/20</p>
+      </div>
+      <div class="col-md-4">
+        <button class="btn">LAST DATE TO APPLY : 06-10-2026</button>
+      </div>
+      <div class="accordion-content collapse">
+        <ul class="text-link">
+          <li><a href="/documents/77530/57941334/16092026_ADV_CRPD_SCO.pdf/72f2">English (1 MB)</a></li>
+          <li><a href="https://recruitment.sbi.bank.in/crpd-sco-2026-27-20/apply">APPLY ONLINE (16.09.2026 to 06.10.2026)</a></li>
+        </ul>
+      </div>
+    </div>
+    """
+
+    def test_parses_a_card(self):
+        cards = SBIScraper._parse(self.CARD)
+        assert len(cards) == 1
+        c = cards[0]
+        assert c["advt_no"] == "CRPD/SCO/2026-27/20"
+        assert c["deadline"] == "2026-10-06"
+        assert c["apply_url"].endswith("/apply")
+
+    def test_title_excludes_the_apply_window_span(self):
+        c = SBIScraper._parse(self.CARD)[0]
+        assert "Apply Online" not in c["title"]
+        assert "16.09.2026" not in c["title"]
+        assert c["title"] == "ENGAGEMENT OF SPECIALIST CADRE OFFICERS ON CONTRACT BASIS"
+
+    def test_title_is_not_the_download_link_text(self):
+        # The first anchor reads "English (1 MB)"; using it as the title gives
+        # a feed full of entries called "Hindi".
+        c = SBIScraper._parse(self.CARD)[0]
+        assert "MB" not in c["title"]
+        assert c["title"].lower() not in ("english", "hindi")
+
+    def test_keeps_a_balanced_closing_bracket(self):
+        # Stripping brackets indiscriminately truncated
+        # "JUNIOR ASSOCIATES (CUSTOMER SUPPORT & SALES)".
+        html = self.CARD.replace(
+            "ENGAGEMENT OF SPECIALIST CADRE OFFICERS ON CONTRACT BASIS",
+            "RECRUITMENT OF JUNIOR ASSOCIATES (CUSTOMER SUPPORT & SALES)",
+        )
+        c = SBIScraper._parse(html)[0]
+        assert c["title"].endswith("(CUSTOMER SUPPORT & SALES)")
+
+    def test_links_to_the_advertisement_pdf(self):
+        c = SBIScraper._parse(self.CARD)[0]
+        assert c["url"].endswith("16092026_ADV_CRPD_SCO.pdf/72f2")
+        assert c["url"].startswith("https://sbi.co.in/")
+
+    def test_published_date_comes_from_the_filename(self):
+        assert SBIScraper._published(
+            "https://sbi.co.in/documents/77530/57941334/16092026_ADV_X.pdf/abc"
+        ) == "2026-09-16"
+
+    def test_published_date_absent_when_filename_has_none(self):
+        assert SBIScraper._published("https://sbi.co.in/documents/x/y/advert.pdf") is None
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("LAST DATE TO APPLY : 06-10-2026", "2026-10-06"),
+            ("LAST DATE TO APPLY: 06.10.2026", "2026-10-06"),
+            ("Apply Online from 16.09.2026 to 06.10.2026", "2026-10-06"),
+            ("no dates here", None),
+        ],
+    )
+    def test_deadline_extraction(self, text, expected):
+        assert SBIScraper._deadline(text) == expected
+
+    def test_last_date_wins_over_the_window(self):
+        text = "Apply Online from 01.01.2026 to 02.02.2026 LAST DATE TO APPLY : 09-09-2026"
+        assert SBIScraper._deadline(text) == "2026-09-09"
+
+    def test_drops_cards_with_no_real_title(self):
+        html = '<div class="card"><p>PDF</p><a href="/x.pdf">English</a></div>'
+        assert SBIScraper._parse(html) == []
+
+    def test_drops_cards_with_no_document_link(self):
+        html = ('<div class="card"><p>RECRUITMENT OF SOMETHING SUBSTANTIAL HERE</p>'
+                '<a href="/about">About</a></div>')
+        assert SBIScraper._parse(html) == []
+
+    def test_collapses_duplicate_documents(self):
+        assert len(SBIScraper._parse(self.CARD + self.CARD)) == 1
+
+    # --- relevance ----------------------------------------------------
+
+    @staticmethod
+    def _iso(days_from_today: int) -> str:
+        from datetime import date, timedelta
+        return (date.today() + timedelta(days=days_from_today)).isoformat()
+
+    def test_keeps_open_and_recently_closed_openings(self):
+        assert SBIScraper._is_relevant(self._iso(10), None) is True
+        assert SBIScraper._is_relevant(self._iso(-5), None) is True
+
+    def test_drops_long_closed_openings(self):
+        assert SBIScraper._is_relevant(self._iso(-200), None) is False
+
+    def test_falls_back_to_publish_date_when_applications_have_closed(self):
+        # No "LAST DATE TO APPLY" means the card has moved on to call letters
+        # or results — still worth carrying while it is recent.
+        assert SBIScraper._is_relevant(None, self._iso(-60)) is True
+        assert SBIScraper._is_relevant(None, self._iso(-500)) is False
+
+    def test_to_entry_carries_the_details_for_the_ai_layer(self):
+        e = SBIScraper()._to_entry(SBIScraper._parse(self.CARD)[0])
+        assert e is not None
+        assert e.category == "naukri"
+        assert e.department == "State Bank of India"
+        assert e.deadline == "2026-10-06"
+        assert "CRPD/SCO/2026-27/20" in e.raw_text
+        assert "2026-10-06" in e.raw_text
