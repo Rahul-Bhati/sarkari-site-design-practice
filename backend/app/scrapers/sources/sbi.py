@@ -16,8 +16,11 @@ Each opening is a `div.card` with a fixed shape:
       div.accordion-content
         ul.text-link > li > a   DOWNLOAD ADVERTISEMENT / APPLY ONLINE / BIODATA
 
-Two traps, both of which produce plausible-looking rubbish rather than an
-error:
+SBI is where `NoticeBoardScraper`'s hooks earn their keep: the rows, links,
+deduplication and filename dates are shared, but all three of the overrides
+below are needed, for two traps and one judgement call.
+
+The traps both produce plausible-looking rubbish rather than an error:
 
   * The title `<p>` contains a nested `text_blink` span repeating the apply
     window. Left in, every title ends with "(Apply Online from ... to ...)".
@@ -25,22 +28,21 @@ error:
     link, whose text is the file's language and size — "English (1 MB)". Taking
     it as the title gives a feed full of entries called "Hindi".
 
-Deadlines come from the "LAST DATE TO APPLY" button, which is explicit and
-unambiguous, rather than from the window text.
+The judgement call is relevance: SBI lists a recruitment through its whole
+lifecycle, so a card with no "LAST DATE TO APPLY" has usually moved on to call
+letters or results. That absence is real signal, not a parsing miss.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from datetime import date, datetime
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, RawEntry, ScraperError
-
-log = logging.getLogger(__name__)
+from app.scrapers.base import RawEntry
+from app.scrapers.base_notice import NoticeBoard, NoticeBoardScraper
 
 BASE = "https://sbi.co.in"
 LIST_URL = f"{BASE}/web/careers/current-openings"
@@ -48,8 +50,6 @@ LIST_URL = f"{BASE}/web/careers/current-openings"
 LAST_DATE = re.compile(r"LAST DATE TO APPLY\s*:?\s*(\d{2}[-/.]\d{2}[-/.]\d{4})", re.I)
 WINDOW = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s*to\s*(\d{2}\.\d{2}\.\d{4})", re.I)
 ADVT_NO = re.compile(r"ADVERTISEMENT\s*NO\s*:?\s*([A-Z0-9/\-]+)", re.I)
-#: SBI names uploads 16092026_ADV_CRPD_SCO_2026-27_20.pdf — DDMMYYYY.
-DATE_IN_FILENAME = re.compile(r"/(\d{8})_")
 
 #: Keep openings that are still open, plus a month's grace so something that
 #: closed last week does not vanish from the feed the day it expires.
@@ -57,62 +57,35 @@ CLOSED_GRACE_DAYS = 30
 #: Fallback when a card carries no deadline at all.
 MAX_AGE_DAYS = 365
 
-MIN_TITLE_LEN = 20
 
+class SBIScraper(NoticeBoardScraper):
+    config = NoticeBoard(
+        source_key="sbi",
+        list_url=LIST_URL,
+        department="State Bank of India",
+        row_selector="div.card",
+        # Advertisement URLs look like
+        # /documents/77530/57941334/16092026_ADV_CRPD_SCO.pdf/72f2 — the `.pdf`
+        # is mid-path, so anchoring the pattern to the end would match nothing.
+        link_pattern=r"\.pdf|/documents/",
+        #: SBI names uploads 16092026_ADV_CRPD_SCO_2026-27_20.pdf — DDMMYYYY.
+        date_in_url=r"/(\d{8})_",
+        date_format="%d%m%Y",
+        min_title_len=20,
+        category="naukri",
+    )
 
-class SBIScraper(BaseScraper):
-    source_key = "sbi"
+    # --- overrides --------------------------------------------------------
 
-    async def scrape(self) -> list[RawEntry]:
-        async with self.client() as client:
-            html = (await self.fetch(client, LIST_URL)).text
+    @classmethod
+    def _title(cls, row, link) -> str:
+        """First paragraph, minus the blinking apply-window span inside it.
 
-        cards = self._parse(html)
-        if not cards:
-            raise ScraperError(
-                "sbi: no opening cards parsed — the careers page layout may have changed"
-            )
-
-        entries = [e for c in cards if (e := self._to_entry(c)) is not None]
-        log.info("sbi: %d cards parsed, %d still relevant", len(cards), len(entries))
-        return entries
-
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse(html: str) -> list[dict]:
-        soup = BeautifulSoup(html, "lxml")
-        out: list[dict] = []
-        seen: set[str] = set()
-
-        for card in soup.select("div.card"):
-            title = SBIScraper._title(card)
-            if len(title) < MIN_TITLE_LEN:
-                continue
-
-            text = " ".join(card.get_text(" ", strip=True).split())
-            url = SBIScraper._advert_url(card)
-            if not url or url in seen:
-                continue
-            seen.add(url)
-
-            advt = ADVT_NO.search(text)
-            window = WINDOW.search(text)
-            out.append({
-                "title": title,
-                "url": url,
-                "advt_no": advt.group(1) if advt else None,
-                "deadline": SBIScraper._deadline(text),
-                "opens": window.group(1) if window else None,
-                "apply_url": SBIScraper._apply_url(card),
-            })
-
-        return out
-
-    @staticmethod
-    def _title(card) -> str:
-        """First paragraph, minus the blinking apply-window span inside it."""
-        p = card.find("p")
+        The row's own text would pull in the advertisement number, the deadline
+        button and every link label, so the generic row-text title does not
+        work here. `link` is unused: its text is the file size.
+        """
+        p = row.find("p")
         if p is None:
             return ""
         # Work on a copy: the span sits *inside* the title paragraph, so
@@ -130,58 +103,23 @@ class SBIScraper(BaseScraper):
         # Only strip a trailing "(" that now opens nothing. Stripping brackets
         # indiscriminately turned "JUNIOR ASSOCIATES (CUSTOMER SUPPORT & SALES)"
         # into "...& SALES" with the closing bracket gone.
-        if title.endswith("(") :
+        if title.endswith("("):
             title = title[:-1].strip()
         if title.count("(") > title.count(")"):
             title += ")"
         return title
 
-    @staticmethod
-    def _advert_url(card) -> str | None:
-        """The advertisement PDF, not the first anchor in the card.
-
-        The first anchor is the download link, whose text is "English (1 MB)".
-        We want its href but never its text.
-        """
-        for a in card.find_all("a", href=True):
-            href = a["href"]
-            if href.lower().endswith(".pdf") or "/documents/" in href:
-                return urljoin(BASE, href)
-        return None
-
-    @staticmethod
-    def _apply_url(card) -> str | None:
-        for a in card.find_all("a", href=True):
-            if "apply" in " ".join(a.get_text(" ", strip=True).split()).lower():
-                return urljoin(BASE, a["href"])
-        return None
-
-    @staticmethod
-    def _deadline(text: str) -> str | None:
-        m = LAST_DATE.search(text)
-        if m:
-            return SBIScraper._iso(m.group(1))
-        m = WINDOW.search(text)
-        return SBIScraper._iso(m.group(2)) if m else None
-
-    @staticmethod
-    def _iso(raw: str) -> str | None:
-        for fmt in ("%d-%m-%Y", "%d.%m.%Y", "%d/%m/%Y"):
-            try:
-                return datetime.strptime(raw, fmt).date().isoformat()
-            except ValueError:
-                continue
-        return None
-
-    @staticmethod
-    def _published(url: str) -> str | None:
-        m = DATE_IN_FILENAME.search(url)
-        if not m:
-            return None
-        try:
-            return datetime.strptime(m.group(1), "%d%m%Y").date().isoformat()
-        except ValueError:
-            return None
+    @classmethod
+    def _extra(cls, row, link) -> dict:
+        text = " ".join(row.get_text(" ", strip=True).split())
+        advt = ADVT_NO.search(text)
+        window = WINDOW.search(text)
+        return {
+            "advt_no": advt.group(1) if advt else None,
+            "deadline": cls._deadline(text),
+            "opens": window.group(1) if window else None,
+            "apply_url": cls._apply_url(row),
+        }
 
     def _to_entry(self, card: dict) -> RawEntry | None:
         published = self._published(card["url"])
@@ -206,9 +144,9 @@ class SBIScraper(BaseScraper):
             title=card["title"][:500],
             raw_text=self.clean_text(raw_text),
             original_url=card["url"],
-            category="naukri",
-            state="ALL",
-            department="State Bank of India",
+            category=self.config.category,
+            state=self.config.state,
+            department=self.config.department,
             published_date=published,
             deadline=card["deadline"],
             pdf_url=card["url"],
@@ -217,6 +155,36 @@ class SBIScraper(BaseScraper):
                 "apply_url": card["apply_url"],
             },
         )
+
+    # --- site-specific helpers -------------------------------------------
+
+    @classmethod
+    def _published(cls, url: str) -> str | None:
+        return cls._date_from_url(url)
+
+    @staticmethod
+    def _apply_url(card) -> str | None:
+        for a in card.find_all("a", href=True):
+            if "apply" in " ".join(a.get_text(" ", strip=True).split()).lower():
+                return urljoin(BASE, a["href"])
+        return None
+
+    @staticmethod
+    def _deadline(text: str) -> str | None:
+        m = LAST_DATE.search(text)
+        if m:
+            return SBIScraper._iso(m.group(1))
+        m = WINDOW.search(text)
+        return SBIScraper._iso(m.group(2)) if m else None
+
+    @staticmethod
+    def _iso(raw: str) -> str | None:
+        for fmt in ("%d-%m-%Y", "%d.%m.%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(raw, fmt).date().isoformat()
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
     def _is_relevant(deadline: str | None, published: str | None) -> bool:

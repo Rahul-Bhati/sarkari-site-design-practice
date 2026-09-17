@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from app.scrapers.base import BaseScraper, RawEntry
+from app.scrapers.base import BaseScraper, RawEntry, ScraperError
+from app.scrapers.base_notice import NoticeBoard, NoticeBoardScraper
 from app.scrapers.sources.gem import GeMScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
@@ -579,3 +582,188 @@ class TestSBIParsing:
         assert e.deadline == "2026-10-06"
         assert "CRPD/SCO/2026-27/20" in e.raw_text
         assert "2026-10-06" in e.raw_text
+
+
+class _Board(NoticeBoardScraper):
+    """A notice board that does not exist, so these tests describe the base
+    class rather than any one portal's quirks."""
+
+    config = NoticeBoard(
+        source_key="fake",
+        list_url="https://board.example.gov.in/notices/archive",
+        department="Example Directorate",
+        row_selector="table tr",
+        title_strip=("Read More",),
+        date_in_url=r"(\d{8})\.pdf",
+        date_format="%Y%m%d",
+        context="The Example Directorate issues these notices.",
+    )
+
+
+def _row(cells: str, href: str = "/files/20260301.pdf", text: str = "Read More") -> str:
+    return f"<tr>{cells}<td><a href='{href}'>{text}</a></td></tr>"
+
+
+def _table(*rows: str) -> str:
+    return "<table>" + "".join(rows) + "</table>"
+
+
+class TestNoticeBoardExtraction:
+    """The generic row extractor, independent of any single site."""
+
+    def test_takes_the_title_from_the_row_and_the_href_from_the_link(self):
+        rows = _Board._parse(_table(_row("<td>Recruitment of Junior Engineers 2026</td>")))
+        assert rows == [{
+            "title": "Recruitment of Junior Engineers 2026",
+            "url": "https://board.example.gov.in/files/20260301.pdf",
+        }]
+
+    def test_link_text_never_reaches_the_title(self):
+        # The whole reason extraction is row-based: anchor text is boilerplate.
+        rows = _Board._parse(_table(_row("<td>Recruitment of Junior Engineers 2026</td>")))
+        assert "Read More" not in rows[0]["title"]
+
+    def test_strips_a_leading_row_index(self):
+        rows = _Board._parse(_table(_row("<td>17.</td><td>Recruitment of Junior Engineers</td>")))
+        assert rows[0]["title"] == "Recruitment of Junior Engineers"
+
+    def test_resolves_relative_and_absolute_hrefs(self):
+        rows = _Board._parse(_table(
+            _row("<td>Notice about the annual recruitment drive</td>", "/a/20260101.pdf"),
+            _row("<td>Another notice about the recruitment drive</td>",
+                 "https://cdn.example.gov.in/b/20260102.pdf"),
+        ))
+        assert [r["url"] for r in rows] == [
+            "https://board.example.gov.in/a/20260101.pdf",
+            "https://cdn.example.gov.in/b/20260102.pdf",
+        ]
+
+    def test_ignores_rows_whose_links_do_not_match_the_pattern(self):
+        html = _table(
+            _row("<td>A perfectly good looking heading</td>", "/about-us"),
+            _row("<td>Recruitment of Junior Engineers 2026</td>"),
+        )
+        assert len(_Board._parse(html)) == 1
+
+    def test_min_title_len_excludes_navigation_rows(self):
+        # A sidebar menu is rows with links to PDFs too — length is what
+        # separates "Downloads" from a real notice.
+        html = _table(
+            _row("<td>Downloads</td>", "/files/20260101.pdf", text="PDF"),
+            _row("<td>RTI</td>", "/files/20260102.pdf", text="PDF"),
+            _row("<td>Recruitment of Junior Engineers 2026</td>", "/files/20260103.pdf"),
+        )
+        rows = _Board._parse(html)
+        assert [r["title"] for r in rows] == ["Recruitment of Junior Engineers 2026"]
+
+    def test_a_row_that_is_only_a_link_yields_no_title(self):
+        # Removing the link text leaves nothing behind, so the row drops out.
+        assert _Board._parse(_table(_row("", text="Annual Report 2026 Download"))) == []
+
+    def test_collapses_duplicate_urls_keeping_the_first(self):
+        html = _table(
+            _row("<td>Recruitment of Junior Engineers 2026</td>", "/files/20260301.pdf"),
+            _row("<td>Recruitment of Junior Engineers 2026 revised</td>", "/files/20260301.pdf"),
+        )
+        rows = _Board._parse(html)
+        assert len(rows) == 1
+        assert rows[0]["title"] == "Recruitment of Junior Engineers 2026"
+
+    def test_row_selector_is_not_limited_to_tables(self):
+        class ListBoard(_Board):
+            config = replace(_Board.config, row_selector="ul.notices li")
+
+        html = ("<ul class='notices'><li>Recruitment of Junior Engineers 2026"
+                "<a href='/files/20260301.pdf'>Read More</a></li></ul>")
+        assert len(ListBoard._parse(html)) == 1
+
+    # --- dates --------------------------------------------------------
+
+    def test_reads_the_date_out_of_the_url(self):
+        assert _Board._date_from_url("https://x.gov.in/files/20260301.pdf") == "2026-03-01"
+
+    def test_no_date_pattern_configured_means_no_date(self):
+        class Undated(_Board):
+            config = replace(_Board.config, date_in_url=None)
+
+        assert Undated._date_from_url("https://x.gov.in/files/20260301.pdf") is None
+
+    def test_unmatched_filename_yields_no_date(self):
+        assert _Board._date_from_url("https://x.gov.in/files/brochure.pdf") is None
+
+    def test_impossible_date_is_absent_rather_than_wrong(self):
+        # Absent beats wrong: urgency badges are computed from these.
+        assert _Board._date_from_url("https://x.gov.in/files/20261340.pdf") is None
+
+    def test_date_format_is_configurable(self):
+        class DayFirst(_Board):
+            config = replace(_Board.config, date_in_url=r"/(\d{8})_", date_format="%d%m%Y")
+
+        assert DayFirst._date_from_url("https://x.gov.in/d/16092026_adv.pdf") == "2026-09-16"
+
+    # --- entry construction -------------------------------------------
+
+    def test_entry_carries_the_configured_identity_and_the_context_line(self):
+        e = _Board()._to_entry(_Board._parse(_table(
+            _row("<td>Recruitment of Junior Engineers 2026</td>")
+        ))[0])
+        assert e.department == "Example Directorate"
+        assert e.category == "naukri"
+        assert e.state == "ALL"
+        assert e.published_date == "2026-03-01"
+        assert e.pdf_url == e.original_url
+        # The AI layer gets the title, the date and a line saying who issued it.
+        assert "Recruitment of Junior Engineers 2026" in e.raw_text
+        assert "2026-03-01" in e.raw_text
+        assert "The Example Directorate issues these notices." in e.raw_text
+
+    def test_undated_entry_omits_the_published_line(self):
+        e = _Board()._to_entry({"title": "A notice with no date in its URL",
+                                "url": "https://x.gov.in/files/brochure.pdf"})
+        assert e.published_date is None
+        assert "Published:" not in e.raw_text
+
+    # --- scrape() -----------------------------------------------------
+
+    async def test_zero_rows_raises_rather_than_reporting_success(self):
+        # The layout-changed signal. Returning [] would look like a quiet day.
+        class Empty(_Board):
+            async def _fetch_list(self):
+                return "<html><body><p>Site under maintenance</p></body></html>"
+
+        with pytest.raises(ScraperError, match="no rows parsed"):
+            await Empty().scrape()
+
+    async def test_scrape_applies_the_select_hook(self):
+        class TopTwo(_Board):
+            async def _fetch_list(self):
+                return _table(*(
+                    _row(f"<td>Recruitment notice number {n} of 2026</td>",
+                         f"/files/2026030{n}.pdf")
+                    for n in (1, 2, 3, 4)
+                ))
+
+            @classmethod
+            def _select(cls, rows):
+                return rows[:2]
+
+        entries = await TopTwo().scrape()
+        assert len(entries) == 2
+        assert entries[0].published_date == "2026-03-01"
+
+    async def test_to_entry_returning_none_drops_the_row(self):
+        class Picky(_Board):
+            async def _fetch_list(self):
+                return _table(
+                    _row("<td>Recruitment notice worth keeping 2026</td>", "/files/20260301.pdf"),
+                    _row("<td>Recruitment notice to discard 2026</td>", "/files/20260302.pdf"),
+                )
+
+            def _to_entry(self, row):
+                return None if "discard" in row["title"] else super()._to_entry(row)
+
+        entries = await Picky().scrape()
+        assert [e.published_date for e in entries] == ["2026-03-01"]
+
+    def test_source_key_comes_from_the_config(self):
+        assert _Board().source_key == "fake"

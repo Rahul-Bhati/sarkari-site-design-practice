@@ -4,44 +4,45 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
 
 ## Blockers
 
-- [ ] **`SUPABASE_SERVICE_KEY` holds the anon key** — reads work, writes fail with
-      `new row violates row-level security policy`. No scraper can insert until
-      this is the `service_role` key. Blocks every live verification step.
-- [ ] **Decide NTA backlog depth** — 1,891 notices in the archive. Import all, or
-      cap at 12 months? Recommendation: cap. Blocks Task 1.
+- [x] **`SUPABASE_SERVICE_KEY` holds the anon key** — resolved; the key now carries
+      the `service_role` claim and scrapers insert.
+- [x] **Decide NTA backlog depth** — capped at 12 months (Rahul, 2026-09-18).
 
 ## Phase 1: Ship the verified source
 
-- [ ] **Task 1 — NTA scraper** (M)
-  - [ ] `sources/nta.py`: parse `table tr`, title from row minus link text and index
-  - [ ] Date from `Notice_(\d{14})\.pdf`
-  - [ ] Age cap per the decision above
-  - [ ] `ScraperError` on zero rows
-  - [ ] Register in `runner.py`; add `sources` row
-  - [ ] Fixture + tests (≥ 500 entries parsed)
+- [x] **Task 1 — NTA scraper** (M)
+  - [x] `sources/nta.py`: parse `table tr`, title from row minus link text and index
+  - [x] Date from `Notice_(\d{14})\.pdf` — *and* the bare pre-2020 `(\d{14})\.pdf`
+  - [x] Age cap — positional, `_within_age_cap`, not per-row
+  - [x] `ScraperError` on zero rows
+  - [x] Register in `runner.py`; add `sources` row
+  - [x] Tests — live run: 1,890 rows parsed, **331** within the cap
+  - [x] Add to `TRUSTED_SOURCES` (missed first time; all 331 were held for review)
 
-- [ ] **Checkpoint A** — suite green; live scrape inserts; NTA notices in feed.
-      **Review with Rahul before abstracting.**
+- [x] **Checkpoint A** — suite green; live scrape inserts; NTA notices in feed.
 
 ## Phase 2: Discovery, then the second example
 
-- [ ] **Task 2 — Discovery pass** (S) *(can run alongside Task 1)*
-  - [ ] TNPSC — find real listing page
-  - [ ] UPSC — `active-exams` yielded zero rows; find the actual notice list
-  - [ ] SBI careers
-  - [ ] RRB Secunderabad
-  - [ ] Record each as viable (URL + selector) or blocked (reason) in `docs/SCRAPER_GUIDE.md`
+- [x] **Task 2 — Discovery pass** (S)
+  - [x] TNPSC — reachable, 291 rows, but **zero open recruitments**; deprioritised
+  - [x] UPSC — returns 102,812 bytes for *every* URL incl. nonsense paths; no 404s.
+        A JS shell with no server-rendered list. Blocked.
+  - [x] SBI careers — viable, `div.card`, live windows
+  - [x] RRB Secunderabad — viable, deferred to Task 7
+  - [x] Recorded in `docs/SCRAPER_GUIDE.md` ("Source survey — September 2026")
 
-- [ ] **Task 3 — Second source, bespoke** (M) — strongest from Task 2;
-      falls back to RBI notifications if none are viable
+- [x] **Task 3 — Second source, bespoke** (M) — **SBI**, not TNPSC: the plan
+      picked TNPSC on row count, but freshness beat volume. Live: **76** entries,
+      5 open application windows.
 
-- [ ] **Task 4 — Extract `NoticeBoardScraper`** (M)
-  - [ ] `base_notice.py` with the frozen `NoticeBoard` config
-  - [ ] Refactor Tasks 1 and 3 to configs
-  - [ ] Generic row-extraction tests, site-independent
-  - [ ] Existing tests pass unedited
+- [x] **Task 4 — Extract `NoticeBoardScraper`** (M)
+  - [x] `base_notice.py` with the frozen `NoticeBoard` config
+  - [x] Refactor Tasks 1 and 3 to configs (NTA 203 → 102 lines)
+  - [x] Generic row-extraction tests, site-independent (20 tests, no real portal)
+  - [x] Existing tests pass unedited — one import line changed, nothing else
 
-- [ ] **Checkpoint B** — two sources on one base; entry counts unchanged.
+- [x] **Checkpoint B** — two sources on one base; 210 tests green; all 407 live
+      entries hash to rows already in the DB, so behaviour is provably unchanged.
 
 ## Phase 3: TLS and IBPS
 
