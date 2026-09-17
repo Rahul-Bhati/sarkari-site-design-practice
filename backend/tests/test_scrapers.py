@@ -14,7 +14,9 @@ from app.scrapers.sources.gem import GeMScraper
 from app.scrapers.sources.ibps import IBPSRecruitmentScraper, IBPSUpdatesScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
+from app.scrapers.sources import rrb
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
+from app.scrapers.sources.rrb import RRBSecunderabadScraper
 from app.scrapers.sources.sbi import SBIScraper
 from app.scrapers.sources.ssc import SSCScraper
 
@@ -585,6 +587,83 @@ class TestSBIParsing:
         assert e.deadline == "2026-10-06"
         assert "CRPD/SCO/2026-27/20" in e.raw_text
         assert "2026-10-06" in e.raw_text
+
+
+class TestRRBParsing:
+    """One config serves every board: the common portal is identical across
+    Secunderabad, Chandigarh and Mumbai."""
+
+    LI = """
+    <ul><li>
+      <a href="/getdata?loc=secunderabad&cenum=03/2026&category=Application (Special Notice)">
+        <strong>(03/2026)</strong>
+        Application (Special Notice)
+        <span class="pub_date">(16-09-2026)</span>
+      </a>
+    </li></ul>
+    """
+
+    def test_parses_a_notice(self):
+        rows = RRBSecunderabadScraper._parse(self.LI)
+        assert len(rows) == 1
+        assert rows[0]["published"] == "2026-09-16"
+
+    def test_title_pairs_the_cen_with_the_category(self):
+        # "Application (Special Notice)" alone does not say which recruitment,
+        # and the CEN number is what candidates actually follow.
+        row = RRBSecunderabadScraper._parse(self.LI)[0]
+        assert row["title"] == "CEN 03/2026 — Application (Special Notice)"
+
+    def test_the_publication_date_is_not_left_in_the_title(self):
+        assert "16-09-2026" not in RRBSecunderabadScraper._parse(self.LI)[0]["title"]
+
+    def test_a_space_in_the_query_string_is_escaped(self):
+        # The portal writes `category=Application (Special Notice)` raw.
+        url = RRBSecunderabadScraper._parse(self.LI)[0]["url"]
+        assert " " not in url
+        assert url.endswith("category=Application%20(Special%20Notice)")
+
+    def test_rows_without_a_date_are_not_notices(self):
+        # The page is mostly navigation; the date span is what marks a notice.
+        html = '<ul><li><a href="/getdata?loc=x">Contact Us and other links</a></li></ul>'
+        assert RRBSecunderabadScraper._parse(html) == []
+
+    def test_ignores_links_that_are_not_notices(self):
+        html = ('<ul><li><a href="/about">Some long heading about the board</a>'
+                '<span class="pub_date">(16-09-2026)</span></li></ul>')
+        assert RRBSecunderabadScraper._parse(html) == []
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [("(16-09-2026)", "2026-09-16"), ("(32-09-2026)", None), ("none", None), ("", None)],
+    )
+    def test_date_parsing(self, text, expected):
+        assert rrb._iso(text) == expected
+
+    def test_drops_notices_older_than_a_year(self):
+        from datetime import date, timedelta
+        fresh = (date.today() - timedelta(days=30)).isoformat()
+        stale = (date.today() - timedelta(days=500)).isoformat()
+        rows = [{"published": fresh}, {"published": stale}, {"published": None}]
+        kept = RRBSecunderabadScraper._select(rows)
+        assert {r["published"] for r in kept} == {fresh, None}
+
+    def test_becomes_an_entry(self):
+        e = RRBSecunderabadScraper()._to_entry(
+            RRBSecunderabadScraper._parse(self.LI)[0]
+        )
+        assert e.department == "Railway Recruitment Board, Secunderabad"
+        assert e.category == "naukri"
+        assert e.published_date == "2026-09-16"
+        assert "Centralised Employment Notice" in e.raw_text
+
+    def test_any_board_is_one_line_of_configuration(self):
+        # CENs are national, so the other twenty boards are deliberately not
+        # registered — but nothing technical stands in the way.
+        config = rrb.board_config("chandigarh", "Chandigarh")
+        assert config.source_key == "rrb_chandigarh"
+        assert config.list_url.endswith("/chandigarh")
+        assert config.row_selector == RRBSecunderabadScraper.config.row_selector
 
 
 class TestIBPSParsing:

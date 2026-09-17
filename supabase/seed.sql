@@ -20,6 +20,7 @@ INSERT INTO sources (name, url, category, state, scraper_key, frequency_minutes,
   ('State Bank of India',              'https://sbi.co.in/web/careers/current-openings','naukri','ALL', 'sbi',       240,  true),
   ('IBPS CRP Updates',                 'https://www.ibps.in/index.php/crp-updates/',  'naukri', 'ALL', 'ibps_crp',  240,  true),
   ('IBPS Recruitment',                 'https://www.ibps.in/index.php/recruitment/',  'naukri', 'ALL', 'ibps_recruitment', 240, true),
+  ('RRB Secunderabad',                 'https://rrb.indianrailways.gov.in/secunderabad','naukri','ALL','rrb_secunderabad', 240, true),
   ('Rajasthan eProcurement',           'https://eproc.rajasthan.gov.in',              'tender', 'RJ',  'raj_eproc',  60,  false),
   ('Central Public Procurement Portal','https://eprocure.gov.in/eprocure/app',        'tender', 'ALL', 'cppp',       60,  false)
 ON CONFLICT (scraper_key) DO NOTHING;

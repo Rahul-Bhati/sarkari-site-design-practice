@@ -72,7 +72,19 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
 
 ## Phase 4: Fill out and verify
 
-- [ ] **Task 7 — Remaining viable sources as configs** (S each)
+- [x] **Task 7 — Remaining viable sources as configs** (S each)
+  - [x] **RRB Secunderabad** — 112 dated entries live. Task 2's recommended page
+        (`/archive_type/employment-notices/`) turned out stale (newest
+        2025-03-03); the boards are migrating onto one common portal,
+        `rrb.indianrailways.gov.in/<board>`, which is live and dated. Secunderabad,
+        Chandigarh and Mumbai serve identical markup, so `board_config()` makes
+        any of the 21 boards a one-liner. Only Secunderabad registered — CENs are
+        national, so all 21 would be 21 copies of every notice.
+  - [x] **TNPSC** — re-checked, still zero open and zero recently-closed. Not built.
+  - [x] **eGazette** — out of scope: it is the `rule` category, which the spec
+        defers to a later batch. The AIA fix reaches it when that batch happens.
+  - [x] URL spaces escaped in the base (RRB writes `category=Application (Special
+        Notice)` raw); NTA, SBI and both IBPS sources verified unchanged.
 - [ ] **Task 8 — Activate and verify end to end**
   - [ ] `UPDATE sources SET is_active = true` — editing `seed.sql` is not enough
         (`ON CONFLICT DO NOTHING`); this is how the GeM row was missed

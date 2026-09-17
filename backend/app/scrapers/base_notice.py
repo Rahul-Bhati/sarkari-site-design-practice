@@ -156,8 +156,11 @@ class NoticeBoardScraper(BaseScraper):
                 continue
 
             # Resolving against the listing URL rather than a configured base
-            # handles relative and absolute hrefs alike.
-            url = urljoin(cfg.list_url, link["href"])
+            # handles relative and absolute hrefs alike. Spaces are escaped
+            # because portals do write them raw — RRB's query string carries
+            # `category=Application (Special Notice)` — and a URL with a space
+            # in it is not a URL, however forgiving a browser chooses to be.
+            url = urljoin(cfg.list_url, link["href"]).replace(" ", "%20")
             title = cls._title(row, link)
             if len(title) < cfg.min_title_len:
                 continue

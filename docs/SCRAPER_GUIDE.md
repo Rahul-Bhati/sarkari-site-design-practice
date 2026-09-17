@@ -192,9 +192,10 @@ off did not have the problem we recorded:
 
 | Source | Status | Listing page and selector |
 |---|---|---|
-| TNPSC | **viable** | `/English/Notification.aspx`, `table tr` — 291 rows. Columns: S.No, notification number, post name, registration open/close, exam date. Real recruitment with deadlines. |
+| TNPSC | **stale, not built** | `/English/Notification.aspx`, `table tr` parses cleanly — 293 rows — but re-checked on 2026-09-18: **zero open and zero closed-within-90-days**, and only one row carries a 2026 date. Structurally viable, editorially dead. Revisit when TNPSC posts a new notification. |
 | SBI | **viable** | `/web/careers/current-openings`, `div.card` — 42 rows of recruitment titles; apply windows appear as "APPLY ONLINE (16.09.2026 to 06.10.2026)" and filenames carry `DDMMYYYY`. |
-| RRB Secunderabad | **viable** | `/archive_type/employment-notices/`, `div.card` — 35 rows, mostly CEN updates and results. |
+| RRB (all 21 boards) | **working** | `rrb.indianrailways.gov.in/<board>`, `li:has(span.pub_date)` — see `sources/rrb.py`. 112 dated notices for Secunderabad. The per-board sites are being retired onto this one common portal, and Secunderabad, Chandigarh and Mumbai serve identical markup, so any board is one line of config. Only Secunderabad is registered: CENs are national, so 21 boards would mean 21 copies of every notice. |
+| ~~RRB Secunderabad archive~~ | **stale** | `/archive_type/employment-notices/` looked strong on row count (35 cards, 468 PDFs) but its newest notice is 2025-03-03. The old site froze when the migration notice went up on 2026-08-18. Check dates, not rows. |
 | UPSC | **blocked** | Catch-all JS shell, never 404s. Needs Playwright. |
 | NTA | **working** | `/NoticeBoardArchive`, `table tr` — see `sources/nta.py`. |
 | IBPS | **working** | Two pages, both `a:has(.detail-section)` with `fetch="aia_tls"` — see `sources/ibps.py`. `/index.php/crp-updates/` (20 exam notices, dated) and `/index.php/recruitment/` (10 live recruitments with open/close dates). |
