@@ -9,7 +9,9 @@ import pytest
 
 from app.scrapers.base import BaseScraper, RawEntry, ScraperError
 from app.scrapers.base_notice import NoticeBoard, NoticeBoardScraper
+from app.scrapers.sources import ibps
 from app.scrapers.sources.gem import GeMScraper
+from app.scrapers.sources.ibps import IBPSRecruitmentScraper, IBPSUpdatesScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
@@ -585,6 +587,139 @@ class TestSBIParsing:
         assert "2026-10-06" in e.raw_text
 
 
+class TestIBPSParsing:
+    """IBPS wraps each row in the anchor and prints a real date column."""
+
+    def _row(self, href: str, *cells: str) -> str:
+        inner = "".join(
+            f'<div class="detail-{n}-heading">{c}</div>'
+            for n, c in zip(("first", "second", "third", "fourth"), cells)
+        )
+        return (f'<a href="{href}"><div class="detail-section">'
+                f'<div class="detail-list">{inner}</div></div></a>')
+
+    @staticmethod
+    def _iso_ago(days: int) -> str:
+        from datetime import date, timedelta
+        return (date.today() - timedelta(days=days)).isoformat()
+
+    # --- CRP updates --------------------------------------------------
+
+    def test_reads_the_title_from_the_details_cell(self):
+        html = self._row(
+            "https://www.ibps.in/wp-content/uploads/Corrigendum-CRP-RRBs-XV-1.pdf",
+            "15 Sep 26", "Corrigendum dated 15.09.2026 in connection with CRP-RRBs-XV",
+        )
+        rows = IBPSUpdatesScraper._parse(html)
+        assert len(rows) == 1
+        assert rows[0]["title"] == (
+            "Corrigendum dated 15.09.2026 in connection with CRP-RRBs-XV"
+        )
+        # The date column must not end up in the title.
+        assert "15 Sep 26" not in rows[0]["title"]
+
+    def test_reads_the_date_from_the_date_cell(self):
+        html = self._row("/x.pdf", "15 Sep 26", "Notification for CRP-RRB-XV 2026 season")
+        assert IBPSUpdatesScraper._parse(html)[0]["published"] == "2026-09-15"
+
+    def test_a_two_digit_year_is_this_century(self):
+        # "%Y" reads "26" as the year 26 AD, which would date the notice to the
+        # Roman empire and silently drop it as too old.
+        assert ibps._iso("15 Sep 26") == "2026-09-15"
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("15 Sep 26", "2026-09-15"),
+            ("15-Sep-2026", "2026-09-15"),
+            ("08-Sep-26", "2026-09-08"),
+            ("15 September 2026", "2026-09-15"),
+            ("no date at all", None),
+            ("", None),
+        ],
+    )
+    def test_date_formats(self, text, expected):
+        assert ibps._iso(text) == expected
+
+    def test_keeps_rows_that_are_not_pdfs(self):
+        # Several updates link to a CRP landing page rather than a document.
+        html = self._row("https://www.ibps.in/index.php/rural-bank-xv/",
+                         "01 Sep 26", "Apply Online for CRP under CRP-RRBs-XV")
+        assert len(IBPSUpdatesScraper._parse(html)) == 1
+
+    def test_two_notices_may_share_one_landing_page(self):
+        html = (self._row("/index.php/rural-bank-xv/", "01 Sep 26",
+                          "Apply Online for Common Recruitment under CRP-RRBs-XV")
+                + self._row("/index.php/rural-bank-xv/", "01 Sep 26",
+                            "Notification for CRP-RRB-XV and related matters"))
+        assert len(IBPSUpdatesScraper._parse(html)) == 2
+
+    def test_drops_stale_updates(self):
+        rows = [{"published": self._iso_ago(20)}, {"published": self._iso_ago(500)}]
+        assert IBPSUpdatesScraper._select(rows) == [rows[0]]
+
+    def test_an_update_becomes_an_entry(self):
+        html = self._row("https://www.ibps.in/wp-content/uploads/cal.pdf",
+                         "16 Jan 26", "Tentative Calendar of CRP Online Examinations")
+        e = IBPSUpdatesScraper()._to_entry(IBPSUpdatesScraper._parse(html)[0])
+        assert e.department == "Institute of Banking Personnel Selection"
+        assert e.category == "naukri"
+        assert e.published_date == "2026-01-16"
+        assert "Common Recruitment Process" in e.raw_text
+
+    # --- recruitment --------------------------------------------------
+
+    def test_recruitment_title_keeps_the_organisation(self):
+        # "Recruitment of Human Resource" alone says nothing about who is
+        # hiring, and BOB is not guessable from the URL.
+        html = self._row("https://ibpsreg.ibps.in/bonwejul26/", "BOB",
+                         "Recruitment of Human Resource", "04-Sep-26 24-Sep-26",
+                         "04-Sep-26 24-Sep-26")
+        rows = IBPSRecruitmentScraper._parse(html)
+        assert rows[0]["title"] == "BOB — Recruitment of Human Resource"
+
+    def test_recruitment_reads_the_window(self):
+        html = self._row("https://ibpsreg.ibps.in/mecljul26/", "MECL",
+                         "Recruitment of Non-Executive Posts",
+                         "12-Sep-2026 11-Oct-2026", "12-Sep-2026 11-Oct-2026")
+        row = IBPSRecruitmentScraper._parse(html)[0]
+        assert row["published"] == "2026-09-12"
+        assert row["deadline"] == "2026-10-11", "the close date is the deadline"
+
+    def test_recruitment_keeps_open_and_recently_closed(self):
+        rows = [{"deadline": self._iso_ago(-10)}, {"deadline": self._iso_ago(5)}]
+        assert IBPSRecruitmentScraper._select(rows) == rows
+
+    def test_recruitment_drops_long_closed(self):
+        rows = [{"deadline": self._iso_ago(200)}]
+        assert IBPSRecruitmentScraper._select(rows) == []
+
+    def test_recruitment_entry_carries_the_deadline(self):
+        html = self._row("https://ibpsreg.ibps.in/rcfaojul26/", "RCF",
+                         "Recruitment of Assistant Officer (Secretarial) E0 Grade",
+                         "10-Sep-2026 26-Sep-2026", "10-Sep-2026 26-Sep-2026")
+        e = IBPSRecruitmentScraper()._to_entry(IBPSRecruitmentScraper._parse(html)[0])
+        assert e.deadline == "2026-09-26"
+        assert "2026-09-26" in e.raw_text
+        assert e.original_url.startswith("https://ibpsreg.ibps.in/")
+
+    # --- shared -------------------------------------------------------
+
+    def test_both_sources_repair_the_certificate_chain(self):
+        # ibps.in omits an intermediate; a plain fetch fails outright.
+        assert IBPSUpdatesScraper.config.fetch == "aia_tls"
+        assert IBPSRecruitmentScraper.config.fetch == "aia_tls"
+
+    def test_a_header_row_is_not_a_notice(self):
+        # The "Date / Details" header sits in a sibling class and carries no
+        # anchor, but guard the shape anyway.
+        assert IBPSUpdatesScraper._parse(
+            '<div class="detail-section-header"><div class="detail-list">'
+            '<div class="detail-first-heading">Date</div>'
+            '<div class="detail-second-heading">Details</div></div></div>'
+        ) == []
+
+
 class _Board(NoticeBoardScraper):
     """A notice board that does not exist, so these tests describe the base
     class rather than any one portal's quirks."""
@@ -599,6 +734,16 @@ class _Board(NoticeBoardScraper):
         date_format="%Y%m%d",
         context="The Example Directorate issues these notices.",
     )
+
+
+class _WrappedBoard(_Board):
+    """A board whose anchor wraps the row, as IBPS's does."""
+
+    config = replace(_Board.config, row_selector="a.notice")
+
+    @classmethod
+    def _title(cls, row, link) -> str:
+        return " ".join(row.find("div").get_text(" ", strip=True).split())
 
 
 def _row(cells: str, href: str = "/files/20260301.pdf", text: str = "Read More") -> str:
@@ -661,14 +806,54 @@ class TestNoticeBoardExtraction:
         # Removing the link text leaves nothing behind, so the row drops out.
         assert _Board._parse(_table(_row("", text="Annual Report 2026 Download"))) == []
 
-    def test_collapses_duplicate_urls_keeping_the_first(self):
-        html = _table(
-            _row("<td>Recruitment of Junior Engineers 2026</td>", "/files/20260301.pdf"),
-            _row("<td>Recruitment of Junior Engineers 2026 revised</td>", "/files/20260301.pdf"),
-        )
-        rows = _Board._parse(html)
+    def test_collapses_rows_that_repeat_verbatim(self):
+        # Portals often print the same notice twice, in a "latest" strip and
+        # again in the full list.
+        row = _row("<td>Recruitment of Junior Engineers 2026</td>", "/files/20260301.pdf")
+        rows = _Board._parse(_table(row, row))
         assert len(rows) == 1
         assert rows[0]["title"] == "Recruitment of Junior Engineers 2026"
+
+    def test_keeps_two_notices_that_share_a_landing_page(self):
+        # IBPS lists "Notification for CRP-RRB-XV" and "Apply Online for
+        # CRP-RRBs-XV" as separate notices pointing at one page. Keying the
+        # dedup on the URL alone silently dropped the second.
+        class AnyLink(_Board):
+            config = replace(_Board.config, link_pattern=r".")
+
+        html = _table(
+            _row("<td>Notification for the Junior Engineer exam</td>", "/exam-page/"),
+            _row("<td>Apply online for the Junior Engineer exam</td>", "/exam-page/"),
+        )
+        rows = AnyLink._parse(html)
+        assert [r["title"] for r in rows] == [
+            "Notification for the Junior Engineer exam",
+            "Apply online for the Junior Engineer exam",
+        ]
+
+    def test_the_row_itself_may_be_the_link(self):
+        # IBPS wraps each row in the anchor, so find_all() on the row returns
+        # the cells and never the link.
+        html = ("<a class='notice' href='/files/20260301.pdf'>"
+                "<div>Recruitment of Junior Engineers 2026</div></a>")
+        rows = _WrappedBoard._parse(html)
+        assert rows[0]["url"].endswith("/files/20260301.pdf")
+        assert rows[0]["title"] == "Recruitment of Junior Engineers 2026"
+
+    def test_a_wrapping_anchor_still_honours_the_link_pattern(self):
+        html = "<a class='notice' href='/about-us'><div>Some long heading here</div></a>"
+        assert _WrappedBoard._parse(html) == []
+
+    def test_a_wrapping_anchor_defeats_the_default_title(self):
+        # Row text minus link text leaves nothing when they are the same
+        # element, so a board shaped like this has to override _title. Worth
+        # pinning down: the failure is an empty title, not an exception.
+        class NoOverride(_Board):
+            config = replace(_Board.config, row_selector="a.notice")
+
+        html = ("<a class='notice' href='/files/20260301.pdf'>"
+                "<div>Recruitment of Junior Engineers 2026</div></a>")
+        assert NoOverride._parse(html) == []
 
     def test_row_selector_is_not_limited_to_tables(self):
         class ListBoard(_Board):
@@ -717,6 +902,25 @@ class TestNoticeBoardExtraction:
         assert "Recruitment of Junior Engineers 2026" in e.raw_text
         assert "2026-03-01" in e.raw_text
         assert "The Example Directorate issues these notices." in e.raw_text
+
+    def test_a_date_column_beats_the_url_pattern(self):
+        # A board that prints its own dates knows better than a filename.
+        e = _Board()._to_entry({
+            "title": "Recruitment of Junior Engineers 2026",
+            "url": "https://x.gov.in/files/20260301.pdf",
+            "published": "2026-05-20",
+        })
+        assert e.published_date == "2026-05-20"
+        assert "2026-05-20" in e.raw_text
+
+    def test_a_deadline_from_the_row_reaches_the_entry(self):
+        e = _Board()._to_entry({
+            "title": "Recruitment of Junior Engineers 2026",
+            "url": "https://x.gov.in/apply/",
+            "deadline": "2026-10-06",
+        })
+        assert e.deadline == "2026-10-06"
+        assert "2026-10-06" in e.raw_text
 
     def test_undated_entry_omits_the_published_line(self):
         e = _Board()._to_entry({"title": "A notice with no date in its URL",

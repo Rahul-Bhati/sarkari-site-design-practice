@@ -58,7 +58,17 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
   - [x] Removed the unnecessary `verify=False` in `raj_eproc.py` — that host
         verifies cleanly — and Playwright's `ignore_https_errors`
 
-- [ ] **Task 6 — IBPS source** (S) — find listing page; config with `fetch="aia_tls"`
+- [x] **Task 6 — IBPS source** (S)
+  - [x] Found **two** listing pages, kept as two sources because they answer
+        different questions: `ibps_crp` (`/crp-updates/`, IBPS's own exam
+        notices) and `ibps_recruitment` (`/recruitment/`, live hiring IBPS runs
+        for other bodies, every row with a closing date)
+  - [x] Both `fetch="aia_tls"`; TLS path exercised end to end
+  - [x] Live through the runner: `ibps_crp` 20 new, `ibps_recruitment` 10 new
+  - [x] Registered, added to `TRUSTED_SOURCES`, `sources` rows inserted and active
+  - [x] Base generalised on the evidence: the anchor may *be* the row, `_extra`
+        may supply `published`/`deadline`, and row identity is title + URL
+        (NTA 331 and SBI 76 verified unchanged)
 
 ## Phase 4: Fill out and verify
 

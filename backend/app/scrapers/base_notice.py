@@ -148,30 +148,45 @@ class NoticeBoardScraper(BaseScraper):
         soup = BeautifulSoup(html, "lxml")
 
         out: list[dict] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
 
         for row in soup.select(cfg.row_selector):
-            link = next(
-                (a for a in row.find_all("a", href=True) if link_re.search(a["href"])),
-                None,
-            )
+            link = cls._link(row, link_re)
             if link is None:
                 continue
 
             # Resolving against the listing URL rather than a configured base
             # handles relative and absolute hrefs alike.
             url = urljoin(cfg.list_url, link["href"])
-            if url in seen:
-                continue
-
             title = cls._title(row, link)
             if len(title) < cfg.min_title_len:
                 continue
 
-            seen.add(url)
+            # Keyed on both, because one landing page can legitimately carry two
+            # notices: IBPS lists "Notification for CRP-RRB-XV" and "Apply
+            # Online for CRP-RRBs-XV" pointing at the same page. Keying on the
+            # URL alone silently dropped the second. This matches how the runner
+            # identifies an entry, which is title, URL and date together.
+            key = (url, title)
+            if key in seen:
+                continue
+
+            seen.add(key)
             out.append({"title": title, "url": url, **cls._extra(row, link)})
 
         return out
+
+    @staticmethod
+    def _link(row, link_re: re.Pattern) -> object | None:
+        """The notice link in this row — which may be the row itself.
+
+        Most boards put an anchor inside the row. IBPS wraps the whole row in
+        one, so `find_all` on it returns the cells and never the link.
+        """
+        candidates = row.find_all("a", href=True)
+        if row.name == "a" and row.get("href"):
+            candidates = [row, *candidates]
+        return next((a for a in candidates if link_re.search(a["href"])), None)
 
     @classmethod
     def _title(cls, row, link) -> str:
@@ -217,7 +232,10 @@ class NoticeBoardScraper(BaseScraper):
 
     def _to_entry(self, row: dict) -> RawEntry | None:
         cfg = self.config
-        published = self._date_from_url(row["url"])
+        # A board that prints a date column is telling us more than a filename
+        # can, so `_extra` supplying one wins over the URL pattern.
+        published = row.get("published") or self._date_from_url(row["url"])
+        deadline = row.get("deadline")
 
         raw_text = "\n".join(
             filter(
@@ -225,6 +243,7 @@ class NoticeBoardScraper(BaseScraper):
                 [
                     f"{cfg.department} notice: {row['title']}",
                     f"Published: {published}" if published else None,
+                    f"Last date: {deadline}" if deadline else None,
                     cfg.context or None,
                     f"Full notice (PDF): {row['url']}",
                 ],
@@ -239,5 +258,6 @@ class NoticeBoardScraper(BaseScraper):
             state=cfg.state,
             department=cfg.department,
             published_date=published,
+            deadline=deadline,
             pdf_url=row["url"],
         )

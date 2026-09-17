@@ -197,7 +197,8 @@ off did not have the problem we recorded:
 | RRB Secunderabad | **viable** | `/archive_type/employment-notices/`, `div.card` — 35 rows, mostly CEN updates and results. |
 | UPSC | **blocked** | Catch-all JS shell, never 404s. Needs Playwright. |
 | NTA | **working** | `/NoticeBoardArchive`, `table tr` — see `sources/nta.py`. |
-| IBPS, eGazette | reachable | AIA fix implemented and working; listing pages not yet found. |
+| IBPS | **working** | Two pages, both `a:has(.detail-section)` with `fetch="aia_tls"` — see `sources/ibps.py`. `/index.php/crp-updates/` (20 exam notices, dated) and `/index.php/recruitment/` (10 live recruitments with open/close dates). |
+| eGazette | reachable | AIA fix works; listing page not yet found. |
 | RRB Chandigarh | **viable** | Not blocked after all — use `rrbcdg.gov.in`, which redirects to `rrb.indianrailways.gov.in/chandigarh`. Only the `www.` host has the bad certificate. |
 | SEBI, NCS, rrbapply, CBIC, joinindianarmy, RBI careers | **blocked** | CAPTCHA or client-rendered. |
 

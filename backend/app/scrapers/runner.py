@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from app.database import db
 from app.scrapers.base import BaseScraper, RawEntry
 from app.scrapers.sources.gem import GeMScraper
+from app.scrapers.sources.ibps import IBPSRecruitmentScraper, IBPSUpdatesScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
 from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
@@ -39,6 +40,8 @@ SCRAPERS: dict[str, type[BaseScraper]] = {
     "gem": GeMScraper,
     "nta": NTAScraper,
     "sbi": SBIScraper,
+    "ibps_crp": IBPSUpdatesScraper,
+    "ibps_recruitment": IBPSRecruitmentScraper,
     "raj_eproc": RajasthanEProcScraper,
 }
 
