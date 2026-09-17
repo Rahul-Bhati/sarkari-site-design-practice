@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import httpx
 import pytest
 
 from app.scrapers.base import BaseScraper, RawEntry, ScraperError
@@ -767,3 +768,86 @@ class TestNoticeBoardExtraction:
 
     def test_source_key_comes_from_the_config(self):
         assert _Board().source_key == "fake"
+
+
+class TestFetchMode:
+    """How a board opens its connection. Neither mode may skip verification."""
+
+    def test_defaults_to_plain(self):
+        assert _Board.config.fetch == "plain"
+
+    def test_a_typo_is_rejected_at_definition_time(self):
+        # `aia-tls` would otherwise fall through to a plain connection and the
+        # source would just look broken, or worse, quietly unverified.
+        with pytest.raises(ValueError, match="unknown fetch mode"):
+            replace(_Board.config, fetch="aia-tls")
+
+    def test_aia_tls_is_accepted(self):
+        assert replace(_Board.config, fetch="aia_tls").fetch == "aia_tls"
+
+    async def test_aia_mode_asks_for_the_repaired_client(self, monkeypatch):
+        class Repaired(_Board):
+            config = replace(_Board.config, fetch="aia_tls")
+
+        asked: list[str] = []
+
+        async def fake_client_aia(self, url):
+            asked.append(url)
+            return _StubClient("<table></table>")
+
+        monkeypatch.setattr(Repaired, "client_aia", fake_client_aia)
+        monkeypatch.setattr(Repaired, "fetch", _stub_fetch)
+
+        await Repaired()._fetch_list()
+        assert asked == [_Board.config.list_url]
+
+    async def test_plain_mode_does_not(self, monkeypatch):
+        called = False
+
+        async def fake_client_aia(self, url):
+            nonlocal called
+            called = True
+            raise AssertionError("plain mode must not build an AIA client")
+
+        monkeypatch.setattr(_Board, "client_aia", fake_client_aia)
+        monkeypatch.setattr(_Board, "client", staticmethod(lambda **kw: _StubClient("<table></table>")))
+        monkeypatch.setattr(_Board, "fetch", _stub_fetch)
+
+        await _Board()._fetch_list()
+        assert called is False
+
+    async def test_an_unrepairable_chain_raises_instead_of_downgrading(self, monkeypatch):
+        # ssl_context_for returns None when the certificate names no CA Issuers
+        # URI — an expired certificate, or a hostname mismatch. There is nothing
+        # to repair, and continuing unverified is never the answer.
+        monkeypatch.setattr("app.scrapers.base.ssl_context_for", lambda host: None)
+
+        with pytest.raises(ScraperError, match="Refusing to continue unverified"):
+            await _Board().client_aia("https://broken.example.gov.in/notices")
+
+    async def test_a_repaired_context_is_handed_to_httpx(self, monkeypatch):
+        import ssl
+
+        context = ssl.create_default_context()
+        monkeypatch.setattr("app.scrapers.base.ssl_context_for", lambda host: context)
+
+        client = await _Board().client_aia("https://portal.example.gov.in/notices")
+        async with client:
+            assert client is not None
+
+
+class _StubClient:
+    """Stands in for an httpx.AsyncClient in the fetch-mode tests."""
+
+    def __init__(self, body: str):
+        self.body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def _stub_fetch(self, client, url, **kwargs):
+    return httpx.Response(200, text=client.body, request=httpx.Request("GET", url))

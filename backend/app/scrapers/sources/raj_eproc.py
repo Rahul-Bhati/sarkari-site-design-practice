@@ -75,9 +75,12 @@ class RajasthanEProcScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def _fetch_list(self) -> str:
-        # NIC portals often ship an incomplete cert chain; this is a public,
-        # read-only listing, so verify=False is an acceptable trade here.
-        async with self.client(verify=False) as client:
+        # This used to skip certificate verification on the assumption that NIC
+        # portals ship an incomplete chain. Checked on 2026-09-18: this host
+        # verifies cleanly against certifi's roots, so the exception bought
+        # nothing and has been removed. Should the chain break later, the fix is
+        # `client_aia()` — never a downgrade.
+        async with self.client() as client:
             html = (await self.fetch(client, LIST_URL)).text
 
         if self._has_tender_table(html):

@@ -37,6 +37,9 @@ from app.scrapers.base import BaseScraper, RawEntry, ScraperError
 
 log = logging.getLogger(__name__)
 
+#: Connection modes a config may ask for. Neither disables verification.
+FETCH_MODES = frozenset({"plain", "aia_tls"})
+
 
 @dataclass(frozen=True)
 class NoticeBoard:
@@ -66,6 +69,11 @@ class NoticeBoard:
     #: notice. This is what keeps sidebars and menus out of the feed.
     min_title_len: int = 15
 
+    #: How to open the connection. "aia_tls" is for portals that omit an
+    #: intermediate certificate; see `utils/tls.py`. Verification is never
+    #: disabled in either mode.
+    fetch: str = "plain"
+
     state: str = "ALL"
     #: A hint only. The AI layer reclassifies, which matters because most of
     #: these boards mix recruitment with the department's own tenders.
@@ -74,6 +82,16 @@ class NoticeBoard:
     #: One sentence telling the AI layer what this body does, prepended to every
     #: entry's raw text. Titles alone are often too terse to summarise well.
     context: str = ""
+
+    def __post_init__(self) -> None:
+        # Catch a typo here rather than at scrape time, where `fetch="aia-tls"`
+        # would quietly fall through to a plain connection — exactly the silent
+        # downgrade the TLS helper exists to prevent.
+        if self.fetch not in FETCH_MODES:
+            raise ValueError(
+                f"{self.source_key}: unknown fetch mode {self.fetch!r}; "
+                f"expected one of {', '.join(sorted(FETCH_MODES))}"
+            )
 
 
 class NoticeBoardScraper(BaseScraper):
@@ -112,8 +130,13 @@ class NoticeBoardScraper(BaseScraper):
         return entries
 
     async def _fetch_list(self) -> str:
-        async with self.client() as client:
-            return (await self.fetch(client, self.config.list_url)).text
+        url = self.config.list_url
+        if self.config.fetch == "aia_tls":
+            client = await self.client_aia(url)
+        else:
+            client = self.client()
+        async with client:
+            return (await self.fetch(client, url)).text
 
     # --- row extraction ---------------------------------------------------
 

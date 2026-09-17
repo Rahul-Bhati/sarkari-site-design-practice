@@ -46,12 +46,17 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
 
 ## Phase 3: TLS and IBPS
 
-- [ ] **Task 5 — AIA TLS helper** (S)
-  - [ ] `utils/tls.py`: `ssl_context_for(host)`, cached per host
-  - [ ] `None` when no AIA extension; never a silent downgrade
-  - [ ] Wire `fetch="aia_tls"` into `base.py`
-  - [ ] Tests with stubbed AIA fetch
-  - [ ] `grep -rn "verify=False" backend/app/` returns nothing
+- [x] **Task 5 — AIA TLS helper** (S)
+  - [x] `utils/tls.py`: `ssl_context_for(host)`, cached per host, chases up to 4 levels
+  - [x] `None` when no AIA extension; `TLSChainError` when the repair fails
+  - [x] Wire `fetch="aia_tls"` into `base.py` (`client_aia`) and `base_notice.py`;
+        an unknown mode raises at import time, not at scrape time
+  - [x] Tests with stubbed I/O and real in-process certificates — no live handshake
+  - [x] `grep -rn "verify=False" backend/app/` returns nothing, and a guard test
+        keeps it that way
+  - [x] Live: `ibps.in` 200 (221 KB), `egazette.gov.in` 200 (68 KB), verification on
+  - [x] Removed the unnecessary `verify=False` in `raj_eproc.py` — that host
+        verifies cleanly — and Playwright's `ignore_https_errors`
 
 - [ ] **Task 6 — IBPS source** (S) — find listing page; config with `fetch="aia_tls"`
 
@@ -70,6 +75,7 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
 ## Known blocked (do not attempt)
 
 - NIC eProcurement family (CPPP, UP, Maharashtra, MP, Rajasthan) — CAPTCHA gate
-- RRB Chandigarh — certificate invalid for its own hostname; unreachable without
-  disabling verification
+- ~~RRB Chandigarh — certificate invalid for its own hostname~~ **Wrong.** Only
+  `www.rrbcdg.gov.in` is mismatched; the apex `rrbcdg.gov.in` verifies and
+  redirects to `rrb.indianrailways.gov.in/chandigarh`. Candidate for Task 7.
 - SEBI (CAPTCHA); NCS, `rrbapply`, CBIC, joinindianarmy, RBI careers (JS-rendered)

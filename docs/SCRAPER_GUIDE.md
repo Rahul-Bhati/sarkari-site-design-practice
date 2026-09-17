@@ -167,9 +167,26 @@ IBPS and eGazette fail certificate verification, but their roots (GlobalSign,
 Let's Encrypt) are legitimate — the servers simply omit the intermediate.
 Browsers recover by following the leaf certificate's Authority Information
 Access "CA Issuers" URI. Fetch that intermediate, add it to certifi's roots, and
-verification passes normally. **Do not reach for `verify=False`**; it is never
-the right fix and it hides genuine problems, such as RRB Chandigarh, whose
-certificate is invalid for its own hostname and which therefore stays unreached.
+verification passes normally.
+
+**Implemented** as `app/scrapers/utils/tls.py`. Set `fetch="aia_tls"` on a
+`NoticeBoard` config, or call `self.client_aia(url)` directly. Verified live:
+`ibps.in` returns HTTP 200 (221 KB) and `egazette.gov.in` HTTP 200 (68 KB), both
+with hostname checking and full chain verification on.
+
+**Never turn verification off.** It is not a shortcut, it is a different
+guarantee, and it hides the diagnosis. `tests/test_tls.py` fails the build if
+`verify` is set to False anywhere under `app/`, and confines `CERT_NONE` to the
+one throwaway probe that reads the leaf certificate to find its issuer.
+
+Before assuming a chain is broken, check. Two of the three hosts we had written
+off did not have the problem we recorded:
+
+- `eproc.rajasthan.gov.in` verified cleanly on 2026-09-18. Its scraper had been
+  skipping verification for nothing; the flag is gone.
+- RRB Chandigarh's mismatch is on **`www.rrbcdg.gov.in`** only. The apex
+  `rrbcdg.gov.in` verifies and redirects to `rrb.indianrailways.gov.in`, which
+  also verifies. It was the hostname that was wrong, not the certificate.
 
 ### Findings
 
@@ -180,8 +197,8 @@ certificate is invalid for its own hostname and which therefore stays unreached.
 | RRB Secunderabad | **viable** | `/archive_type/employment-notices/`, `div.card` — 35 rows, mostly CEN updates and results. |
 | UPSC | **blocked** | Catch-all JS shell, never 404s. Needs Playwright. |
 | NTA | **working** | `/NoticeBoardArchive`, `table tr` — see `sources/nta.py`. |
-| IBPS, eGazette | reachable | Need the AIA intermediate fix; listing pages not yet found. |
-| RRB Chandigarh | **blocked** | Certificate invalid for its own hostname. |
+| IBPS, eGazette | reachable | AIA fix implemented and working; listing pages not yet found. |
+| RRB Chandigarh | **viable** | Not blocked after all — use `rrbcdg.gov.in`, which redirects to `rrb.indianrailways.gov.in/chandigarh`. Only the `www.` host has the bad certificate. |
 | SEBI, NCS, rrbapply, CBIC, joinindianarmy, RBI careers | **blocked** | CAPTCHA or client-rendered. |
 
 Verified reachable but not yet built, for a later batch: RBI notifications (698

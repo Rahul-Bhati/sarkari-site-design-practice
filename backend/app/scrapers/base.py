@@ -24,6 +24,7 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+from app.scrapers.utils.tls import ssl_context_for
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +113,26 @@ class BaseScraper(ABC):
             **kwargs,
         )
 
+    async def client_aia(self, url: str) -> httpx.AsyncClient:
+        """A client that trusts the intermediate certificate `url`'s host omits.
+
+        For portals that serve an incomplete chain — see `utils/tls.py`.
+        Verification stays on throughout; if the chain cannot be repaired this
+        raises rather than returning a client that would accept anything.
+        """
+        host = httpx.URL(url).host
+        # The probe and download are blocking socket work; keep them off the
+        # event loop. Both are cached per host, so this happens once.
+        context = await asyncio.to_thread(ssl_context_for, host)
+        if context is None:
+            raise ScraperError(
+                f"{self.source_key}: {host} fails certificate verification and its "
+                "certificate names no CA Issuers URI, so the chain cannot be "
+                "repaired. Refusing to continue unverified — the real problem is "
+                "likely an expired certificate or a hostname mismatch."
+            )
+        return self.client(verify=context)
+
     async def fetch_impersonated(self, url: str) -> str | None:
         """GET a page using a real browser's TLS fingerprint.
 
@@ -152,6 +173,12 @@ class BaseScraper(ABC):
         (pib.gov.in sits behind Akamai and 403s httpx no matter what headers we
         send) and for pages that build their content with JavaScript. Returns
         None when Playwright is unavailable, so callers can fall back.
+
+        Certificate errors are *not* ignored here. This used to pass
+        `ignore_https_errors`, which made the rendered path quietly weaker than
+        the plain one — a source could fail verification through `fetch()` and
+        then succeed through this, with nothing in the logs to say so. A host
+        with an incomplete chain belongs on `client_aia()` instead.
         """
         try:
             from playwright.async_api import async_playwright  # noqa: PLC0415
@@ -169,7 +196,6 @@ class BaseScraper(ABC):
                 context = await browser.new_context(
                     user_agent=USER_AGENT,
                     locale="en-IN",
-                    ignore_https_errors=True,
                 )
                 page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
