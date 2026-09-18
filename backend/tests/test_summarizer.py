@@ -316,6 +316,46 @@ class TestStrictSchema:
         assert _strict_schema({"type": "string"}) == {"type": "string"}
         assert _strict_schema([{"type": "null"}]) == [{"type": "null"}]
 
+    def test_auto_generated_titles_are_dropped(self):
+        # Pydantic emits "title": "Emd Amount" beside a property already named
+        # emd_amount. It is pure cost: the schema is the largest part of every
+        # request, so anything that tells the model nothing has to go.
+        schema = _strict_schema(Summary.model_json_schema())
+        assert "title" not in schema["properties"]["summary_en"]
+        assert "title" not in schema["$defs"]["KeyDetails"]["properties"]["emd_amount"]
+        assert "title" not in schema["$defs"]["KeyDetails"]
+
+    def test_defaults_are_dropped(self):
+        # Strict mode requires every field, so a default can never apply. When
+        # the model omits one anyway, Pydantic fills it in on our side.
+        schema = _strict_schema(Summary.model_json_schema())
+        assert "default" not in schema["properties"]["deadline"]
+
+    def test_descriptions_survive(self):
+        # These are instructions, not metadata — "everyday Hindi, not Shudh
+        # Hindi" changes the output. Trimming them would be a silent quality
+        # regression dressed up as a saving.
+        schema = _strict_schema(Summary.model_json_schema())
+        assert "Hindi" in schema["properties"]["summary_hi"]["description"]
+        assert schema["properties"]["title"]["description"]
+
+    def test_the_schema_stays_small(self):
+        # A guard on the thing that actually costs money. The schema is sent on
+        # every call; if it grows past this, the daily token budget shrinks in
+        # proportion and nobody notices until the queue stalls.
+        import json
+        size = len(json.dumps(_strict_schema(Summary.model_json_schema())))
+        # Currently ~2,200. The ceiling leaves room for a field or two without
+        # being so tight that unrelated edits trip it.
+        assert size < 2600, f"schema grew to {size} characters"
+
+    def test_a_title_the_model_needs_is_not_a_casualty(self):
+        # The `title` *property* of Summary is a real field and must survive the
+        # cull of `title` *keys*.
+        schema = _strict_schema(Summary.model_json_schema())
+        assert "title" in schema["properties"]
+        assert "title" in schema["required"]
+
 
 class TestGeminiFreeTier:
     def _provider(self, model: str) -> GeminiProvider:

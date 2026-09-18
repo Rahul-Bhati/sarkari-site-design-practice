@@ -266,6 +266,24 @@ EST_TOKENS_PER_SUMMARY = 1_800
 GROQ_TPM_HEADROOM = 0.80
 
 
+#: Keys Pydantic emits that cost tokens and tell the model nothing.
+#:
+#: `title` is auto-generated from the field name — "Emd Amount" next to a
+#: property already called `emd_amount`. `default` is meaningless here because
+#: strict mode requires every field anyway, and Pydantic applies its own
+#: defaults when parsing the reply. Dropping both takes the schema from 2,522
+#: characters to 1,970, which is ~154 fewer input tokens on *every* call.
+#:
+#: That is worth doing because the schema dominates the request. A typical
+#: summarisation sends ~1,291 input tokens, of which the schema is ~700 and the
+#: notice itself only ~144: 87% of the input is boilerplate resent every time.
+_NOISE_KEYS = frozenset({"title", "default"})
+
+#: Schema keys whose children are keyed by *field name* rather than by schema
+#: keyword. Nothing inside these may be dropped by name.
+_NAME_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
+
+
 def _strict_schema(schema: Any) -> Any:
     """Rewrite a Pydantic JSON schema into the strict subset Groq requires.
 
@@ -273,13 +291,27 @@ def _strict_schema(schema: Any) -> Any:
     false and to list *all* its properties as required. Pydantic marks fields
     with defaults as optional, so they have to be forced back in — they are
     already nullable via `anyOf: [..., null]`, which strict mode allows.
+
+    Field `description`s are kept: unlike titles they carry real instruction
+    ("everyday Hindi, not Shudh Hindi") and changing them changes the output.
     """
     if isinstance(schema, list):
         return [_strict_schema(s) for s in schema]
     if not isinstance(schema, dict):
         return schema
 
-    out = {k: _strict_schema(v) for k, v in schema.items()}
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _NAME_MAPS and isinstance(value, dict):
+            # Keys inside these are *field names*, not schema keywords. Summary
+            # has a field called `title`, so stripping by key blindly deletes a
+            # real field and the model stops being asked for it.
+            out[key] = {name: _strict_schema(sub) for name, sub in value.items()}
+        elif key in _NOISE_KEYS:
+            continue
+        else:
+            out[key] = _strict_schema(value)
+
     if out.get("type") == "object" and isinstance(out.get("properties"), dict):
         out["additionalProperties"] = False
         out["required"] = list(out["properties"])
