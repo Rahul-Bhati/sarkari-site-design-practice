@@ -48,10 +48,16 @@ class NTAScraper(NoticeBoardScraper):
         #: Link text carries no information and must come out of the title.
         title_strip=("Read More",),
         min_title_len=15,
-        # The board mixes exam notices with NTA's own procurement and hiring
-        # ("NOTICE INVITING QUOTATION FOR EMPANELMENT OF HOTELS", "EoI for
-        # Translation Reviewers"), so this is a hint only.
-        category="naukri",
+        # A hint, but no longer a guess: of the first 130 NTA entries the AI
+        # classified, 128 came back as `notice` and two as rule/tender. The
+        # board is results, answer keys, admit cards and exam calendars — not
+        # vacancies. This matters because entries are published before they are
+        # summarised, so the hint is the category users actually see first.
+        #
+        # It does also carry NTA's own procurement and hiring ("NOTICE INVITING
+        # QUOTATION FOR EMPANELMENT OF HOTELS", "EoI for Translation
+        # Reviewers"), which the AI reclassifies.
+        category="notice",
         context=(
             "The National Testing Agency conducts entrance examinations "
             "including JEE (Main), NEET, UGC-NET, CUET and CMAT."

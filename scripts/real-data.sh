@@ -36,8 +36,13 @@ if [[ ! -f backend/.env ]]; then
 fi
 
 # Read the admin key through pydantic so .env parsing matches the app's.
+#
+# _env_file is passed explicitly because Settings declares env_file=".env",
+# which resolves against the *current directory*. This script runs from the
+# repo root, so the plain Settings() read every value as empty and reported a
+# missing ADMIN_API_KEY on a correctly configured machine.
 ADMIN_KEY="$(backend/.venv/bin/python -c \
-  'import sys; sys.path.insert(0, "backend"); from app.config import Settings; print(Settings().admin_api_key)')"
+  'import sys; sys.path.insert(0, "backend"); from app.config import Settings; print(Settings(_env_file="backend/.env").admin_api_key or "")')"
 
 if [[ -z "$ADMIN_KEY" ]]; then
   echo "ADMIN_API_KEY is not set in backend/.env." >&2
@@ -54,9 +59,10 @@ api() { curl -s -X "$1" "$API$2" -H "X-Admin-Key: $ADMIN_KEY" --max-time "${3:-3
 
 if $PURGE; then
   echo "==> Deleting seed entries"
-  backend/.venv/bin/python - <<'PY'
-import sys
-sys.path.insert(0, "backend")
+  # Run from backend/, not the repo root: app.config declares env_file=".env",
+  # which pydantic resolves against the current directory, so importing
+  # app.database from anywhere else silently sees no configuration at all.
+  (cd backend && .venv/bin/python - <<'PY'
 from app.database import db
 
 # Every seed row carries content_hash='seed_hash_NNNN', which a real scraper can
@@ -79,6 +85,7 @@ for i in range(0, len(doomed), 50):
     db().table("entries").delete().in_("id", doomed[i:i + 50]).execute()
 print(f"    removed {len(doomed)} seed entries, kept {kept} real ones")
 PY
+  )
 fi
 
 echo "==> Scraping${SOURCE:+ $SOURCE}"

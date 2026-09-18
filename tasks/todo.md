@@ -109,10 +109,31 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
         tokens a summary the true ceiling is ~110/day.
   - [ ] Decide whether to purge the 19 fabricated seed entries (see below)
 
-## Follow-ups this milestone surfaced
+## Publish-then-enrich (Rahul's call, 2026-09-18)
 
-- [ ] **Add a token-per-day guard** so the summariser stops cleanly instead of
-      burning retries against 429s. `ai_daily_request_cap` is the wrong unit.
+The AI quota used to gate *visibility*: nothing appeared until it was
+summarised, so 490 real notices sat invisible behind an exhausted token budget.
+That is now split in two:
+
+- **Visibility** is decided by source trust, at scrape time. A `TRUSTED_SOURCES`
+  entry is published immediately with the portal's own title, department and
+  dates. The card says the summary is still being written and links the notice.
+- **Summarisation** is decided by "has no summary yet", not by status, so the
+  queue is unaffected by an entry already being live.
+
+Result: the naukri feed went from 5 entries (4 of them fabricated seed rows) to
+**219 real ones**, plus 312 notices and 98 tenders — 630 live, 446 of them
+showing scraped facts while they wait their turn.
+
+Consequence worth remembering: an unsummarised entry is filed under the
+*scraper's* guessed category, so those guesses now have to be right. NTA's was
+`naukri` and the AI had been reclassifying 128 of 130 to `notice` — the hint is
+corrected and the 178 unsummarised NTA rows were moved.
+
+- [x] **Token-per-day guard** — `ai_daily_token_cap`, default 195,000, checked
+      alongside spend and requests, and surfaced in `/api/admin/pending-count`.
+
+## Follow-ups this milestone surfaced
 - [ ] **PIB is degraded** — the Akamai bypass still works (126 KB fetched), but
       `allRel.aspx` now has 1 press-release anchor among 125, so the scraper
       returns a navigation label as an entry. The list is no longer

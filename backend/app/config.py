@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # Guards the free tier's requests/day quota, which no spend cap can catch
     # because free-tier calls cost nothing. Keep it under the model's limit.
     ai_daily_request_cap: int = 900
+    # And the quota that actually bites first. Groq's free tier allows 200,000
+    # tokens per day; at roughly 1,800 tokens a summary that is about 110
+    # summaries, not 900. Without this the request cap reports plenty of
+    # headroom while the real budget is gone, and every entry then burns three
+    # retries against a 429 before being marked failed.
+    # 0 disables the check, for paid tiers that have no daily token quota.
+    ai_daily_token_cap: int = 195_000
     ai_batch_size: int = 10
     ai_auto_approve_confidence: float = 0.90
 

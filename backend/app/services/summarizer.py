@@ -104,6 +104,25 @@ def requests_today() -> int:
     return res.count or 0
 
 
+def tokens_today() -> int:
+    """Input plus output tokens billed today.
+
+    Providers meter the free tier on tokens per day, not requests, so this is
+    the number that runs out first.
+    """
+    res = (
+        db()
+        .table("ai_usage")
+        .select("input_tokens, output_tokens")
+        .gte("created_at", _ist_midnight_utc().isoformat())
+        .execute()
+    )
+    return sum(
+        (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0)
+        for r in (res.data or [])
+    )
+
+
 def estimate_cost_inr(model: str, input_tokens: int, output_tokens: int) -> float:
     """Cost for a hypothetical call. Looks the model up across both providers."""
     from app.services.ai_provider import (  # noqa: PLC0415
@@ -173,8 +192,14 @@ TRUSTED_SOURCES = {
 }
 
 
-def _check_caps() -> tuple[float, int]:
-    """Raise if either daily cap is already spent. Returns (spend, requests)."""
+def _check_caps() -> tuple[float, int, int]:
+    """Raise if any daily cap is spent. Returns (spend, requests, tokens).
+
+    Three caps because the providers fail in three different ways: a paid tier
+    runs out of money, a free tier runs out of requests, and a free tier with
+    generous request limits runs out of *tokens* first. Groq is the third case
+    and it is the one that caught us out.
+    """
     spend = spend_today_inr()
     if spend >= settings.ai_daily_cap_inr:
         raise DailyCapReached(
@@ -187,26 +212,39 @@ def _check_caps() -> tuple[float, int]:
             f"daily AI request cap reached: {used} of {settings.ai_daily_request_cap}"
         )
 
+    tokens = tokens_today() if settings.ai_daily_token_cap else 0
+    if settings.ai_daily_token_cap and tokens >= settings.ai_daily_token_cap:
+        raise DailyCapReached(
+            f"daily AI token cap reached: {tokens:,} of "
+            f"{settings.ai_daily_token_cap:,}. The queue resumes after midnight IST."
+        )
+
     if spend >= settings.ai_daily_cap_inr * 0.8:
         log.warning("AI spend at %.0f%% of the daily cap", spend / settings.ai_daily_cap_inr * 100)
     if used >= settings.ai_daily_request_cap * 0.8:
         log.warning("AI requests at %d of %d today", used, settings.ai_daily_request_cap)
+    if settings.ai_daily_token_cap and tokens >= settings.ai_daily_token_cap * 0.8:
+        log.warning("AI tokens at %d of %d today", tokens, settings.ai_daily_token_cap)
 
-    return spend, used
+    return spend, used, tokens
 
 
 async def process_pending_entries(batch_size: int | None = None) -> dict[str, Any]:
     """Summarize a batch of pending entries. Returns a run report."""
     batch_size = batch_size or settings.ai_batch_size
-    spend, used = _check_caps()
+    spend, used, tokens = _check_caps()
     provider = get_provider()
 
+    # Keyed on "has no summary", not on status. Entries from trusted sources are
+    # published the moment they are scraped, showing the portal's own title and
+    # dates, and the summary arrives later as an enrichment — so status no
+    # longer tells us whether the AI still has work to do.
     res = (
         db()
         .table("entries")
         .select("*, sources(name, scraper_key)")
-        .eq("status", "pending")
         .eq("summary_en", "")
+        .neq("status", "rejected")
         .lt("ai_attempts", MAX_ATTEMPTS)
         .order("created_at", desc=False)
         .limit(batch_size)
@@ -224,6 +262,8 @@ async def process_pending_entries(batch_size: int | None = None) -> dict[str, An
         "cost_inr": 0.0,
         "spend_today_inr": spend,
         "requests_today": used,
+        "tokens_today": tokens,
+        "token_cap": settings.ai_daily_token_cap,
         "errors": [],
     }
 
@@ -306,7 +346,11 @@ def _apply_summary(
         update["budget_amount"] = int(summary.budget_or_salary) * 100  # INR -> paisa
     if approve:
         update["status"] = "approved"
-        update["published_at"] = datetime.now(timezone.utc).isoformat()
+        # A trusted entry was already published when it was scraped; keep that
+        # timestamp so it does not jump to the top of the feed days later just
+        # because the summary finally arrived.
+        if not entry.get("published_at"):
+            update["published_at"] = datetime.now(timezone.utc).isoformat()
 
     db().table("entries").update(update).eq("id", entry["id"]).execute()
     db().table("ai_usage").insert(
@@ -320,6 +364,20 @@ def _apply_summary(
     ).execute()
 
 
+def awaiting_summary_count() -> int:
+    """Entries the AI still owes a summary, whatever their publication status."""
+    res = (
+        db()
+        .table("entries")
+        .select("id", count="exact")
+        .eq("summary_en", "")
+        .neq("status", "rejected")
+        .execute()
+    )
+    return res.count or 0
+
+
 def pending_count() -> int:
+    """Entries waiting on a human in the review queue."""
     res = db().table("entries").select("id", count="exact").eq("status", "pending").execute()
     return res.count or 0

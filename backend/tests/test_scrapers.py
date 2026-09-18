@@ -370,7 +370,10 @@ class TestNTAParsing:
         rows = NTAScraper._parse(self.ROW)
         assert len(rows) == 1
         e = NTAScraper()._to_entry(rows[0])
-        assert e.category == "naukri"
+        # Results, answer keys and exam calendars, not vacancies — the AI put
+        # 128 of the first 130 in `notice`, and unsummarised entries are shown
+        # under the scraper's category, so the hint has to be right.
+        assert e.category == "notice"
         assert e.state == "ALL"
         assert e.department == "National Testing Agency"
         assert e.published_date == "2026-09-18"

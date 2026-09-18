@@ -17,12 +17,15 @@ from app.models.entry import Category, Urgency
 from app.scrapers.runner import SCRAPERS, results_as_dicts, run_all, run_scraper
 from app.services import cache
 from app.services.auth import AdminIdentity, require_admin
+from app.config import settings
 from app.services.summarizer import (
     DailyCapReached,
+    awaiting_summary_count,
     pending_count,
     process_pending_entries,
     requests_today,
     spend_today_inr,
+    tokens_today,
 )
 
 log = logging.getLogger(__name__)
@@ -270,12 +273,23 @@ async def maintenance():
 
 @router.get("/pending-count")
 async def pending():
+    tokens = tokens_today()
     return {
         "pending": pending_count(),
-        "awaiting_ai": _count(lambda q: q.eq("status", "pending").eq("summary_en", "")),
+        # Published entries from trusted sources count here too: they are live
+        # in the feed with the portal's own wording and still owed a summary.
+        "awaiting_ai": awaiting_summary_count(),
         "awaiting_review": _count(lambda q: q.eq("status", "pending").neq("summary_en", "")),
         "ai_spend_today_inr": spend_today_inr(),
         "ai_requests_today": requests_today(),
+        "ai_tokens_today": tokens,
+        "ai_token_cap": settings.ai_daily_token_cap,
+        # The quota that runs out first on a free tier. Surfaced so the
+        # dashboard can say "paused until midnight IST" instead of the queue
+        # appearing to stall for no reason.
+        "ai_tokens_remaining": max(settings.ai_daily_token_cap - tokens, 0)
+        if settings.ai_daily_token_cap
+        else None,
     }
 
 

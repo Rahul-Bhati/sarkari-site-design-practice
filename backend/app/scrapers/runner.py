@@ -30,6 +30,7 @@ from app.scrapers.sources.rrb import RRBSecunderabadScraper
 from app.scrapers.sources.sbi import SBIScraper
 from app.scrapers.sources.ssc import SSCScraper
 from app.scrapers.utils.dedup import existing_hashes
+from app.services.summarizer import TRUSTED_SOURCES
 
 log = logging.getLogger(__name__)
 
@@ -98,7 +99,9 @@ async def run_scraper(source_key: str) -> RunResult:
     try:
         raw = await asyncio.wait_for(scraper_cls().scrape(), timeout=SCRAPER_TIMEOUT_SECONDS)
         result.entries_found = len(raw)
-        new, dupes = _persist(scraper_cls(), source_id, raw)
+        new, dupes = _persist(
+            scraper_cls(), source_id, raw, trusted=source_key in TRUSTED_SOURCES
+        )
         result.entries_new, result.entries_duplicate = new, dupes
         _mark_source_success(source, new)
     except Exception as exc:
@@ -123,7 +126,9 @@ async def run_scraper(source_key: str) -> RunResult:
     return result
 
 
-def _persist(scraper: BaseScraper, source_id: int, raw: list[RawEntry]) -> tuple[int, int]:
+def _persist(
+    scraper: BaseScraper, source_id: int, raw: list[RawEntry], trusted: bool = False
+) -> tuple[int, int]:
     """Insert new entries, skipping ones we already have. Returns (new, duplicate)."""
     if not raw:
         return 0, 0
@@ -145,7 +150,7 @@ def _persist(scraper: BaseScraper, source_id: int, raw: list[RawEntry]) -> tuple
     if not fresh:
         return 0, duplicates
 
-    rows = [_to_row(source_id, h, e) for h, e in fresh.items()]
+    rows = [_to_row(source_id, h, e, trusted) for h, e in fresh.items()]
     # ignore_duplicates guards the race where two runs overlap.
     res = db().table("entries").upsert(rows, on_conflict="content_hash", ignore_duplicates=True).execute()
     inserted = len(res.data or [])
@@ -153,7 +158,17 @@ def _persist(scraper: BaseScraper, source_id: int, raw: list[RawEntry]) -> tuple
     return inserted, duplicates
 
 
-def _to_row(source_id: int, content_hash: str, entry: RawEntry) -> dict:
+def _to_row(source_id: int, content_hash: str, entry: RawEntry, trusted: bool) -> dict:
+    """One `entries` row.
+
+    A trusted source is published immediately, carrying the portal's own title,
+    department and dates. The summary is an enrichment that lands later, and
+    the feed renders the scraped facts until it does — otherwise a day's worth
+    of real notices sits invisible behind an AI quota, which is exactly what
+    happened when the free tier's token budget ran out.
+
+    Untrusted sources still wait for a summary and a human.
+    """
     extra = {k: v for k, v in (entry.extra or {}).items() if v is not None}
     return {
         "source_id": source_id,
@@ -170,7 +185,8 @@ def _to_row(source_id: int, content_hash: str, entry: RawEntry) -> dict:
         "budget_amount": entry.budget_amount,
         "key_details": extra,
         "content_hash": content_hash,
-        "status": "pending",
+        "status": "approved" if trusted else "pending",
+        "published_at": _now().isoformat() if trusted else None,
     }
 
 
