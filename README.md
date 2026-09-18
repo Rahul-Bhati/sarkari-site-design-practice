@@ -106,7 +106,7 @@ Anything the AI scores below 0.90 confidence waits in `/admin` for review.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest    # 153 tests
+cd backend && .venv/bin/python -m pytest    # 278 tests
 cd frontend && npm run build                # type-check + build
 ```
 
@@ -124,7 +124,7 @@ What actually works today:
 | RRB (`rrb_secunderabad`) | **Working** — 112 entries | The 21 boards are consolidating onto `rrb.indianrailways.gov.in/<board>`, which serves identical markup for every board. Only Secunderabad is registered: a CEN is a national notice, so all 21 would mean 21 copies of each. Adding a board is one line. |
 | GeM (`gem`) | **Working** — ~50 bids/run | `/all-bids` is a shell; the listing comes from a JSON endpoint. CSRF token arrives as the `csrf_gem_cookie` cookie and must be echoed in a field named `csrf_bd_gem_nk` — the names deliberately differ, and a mismatch is a bare 403. ~47,000 live bids; we take the newest 5 pages. |
 | SSC (`ssc`) | **Working, but thin** — 1 entry | ssc.gov.in is an Angular SPA whose HTML has zero anchors, so HTML scraping cannot work; the site's own public API is used instead. That API lists only 11 Selection Post advertisements going back to 2019, and just one falls inside the 400-day window. Not a fault — but SSC's wider notice board is still uncovered. |
-| PIB (`pib`) | **Degraded** — needs a fix | The Akamai bypass still works (`curl_cffi` gets 126 KB where httpx gets 403), but `allRel.aspx` now carries only 1 press-release anchor among 125, so the scraper returns a navigation label instead of a release. The release list is no longer server-rendered on that page. |
+| PIB (`pib`) | **Working** — today’s releases | Behind an Akamai WAF that fingerprints the TLS handshake, so every request goes through `curl_cffi`. `allRel.aspx` gives correct English titles and ministries, but links to `PressReleaseDetail.aspx`, a JavaScript shell with no release on it — the PRID is rebuilt into `PressReleasePage.aspx`, where the body lives in `#PdfDiv`. Serves the current day only; the date dropdowns look like a filter but the ASP.NET postback behind them is ignored. |
 | TNPSC | **Not built** — stale | Parses cleanly (293 rows) but has zero open and zero recently-closed recruitments; only one row carries a 2026 date. Structurally viable, editorially dead. |
 | Rajasthan eProc (`raj_eproc`) | **Blocked** — inactive | CAPTCHA-gated. The scraper raises rather than returning data; see the module docstring. |
 | CPPP (`cppp`) | **Blocked** — inactive | Same NIC platform as Rajasthan, same CAPTCHA gate. |

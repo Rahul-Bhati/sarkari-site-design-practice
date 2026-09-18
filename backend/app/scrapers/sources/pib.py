@@ -4,8 +4,25 @@ Clean HTML, a structured release list, and a ministry name on every item —
 still the best-shaped source we have. The catch is delivery, not parsing:
 pib.gov.in sits behind Akamai, which 403s plain HTTP clients on TLS fingerprint
 alone (verified: identical headers get 200 from curl and 403 from httpx), so
-the list page is fetched through headless Chromium. Detail pages are fetched
-over plain HTTP first and only fall back to rendering if they are blocked too.
+every request goes through curl_cffi.
+
+**The list links to a page that has no release on it.** `allRel.aspx` gives
+correct English titles and ministries, but its hrefs point at
+`PressReleaseDetail.aspx?PRID=...`, which serves a JavaScript shell: the body
+is 3 KB of Hindi navigation and `div.content-area` is empty. Parsing it yields
+an entry titled "विज्ञप्ति अन्य प्रेस विज्ञप्तियाँ" — the "Other Press
+Releases" menu heading — which is how this source came to be publishing a
+navigation label as a news item.
+
+The release itself lives at `PressReleasePage.aspx?PRID=...`, same PRID, 12 KB
+of English inside `#PdfDiv`. So the PRID is taken from the list and the URL is
+rebuilt; the href is never followed as given.
+
+`allRel.aspx` serves the current day only. Its ministry, day, month and year
+dropdowns look like a date filter, but the ASP.NET postback behind them is
+ignored — posting a valid `__VIEWSTATE` with day=All, or with any past date,
+returns exactly the same releases. Backfilling is not available, so the
+scheduler's hourly run is what gives coverage.
 
 Central government, so state is always 'ALL'.
 """
@@ -27,6 +44,15 @@ log = logging.getLogger(__name__)
 LIST_URL = "https://pib.gov.in/allRel.aspx?reg=3&lang=1"
 BASE = "https://pib.gov.in/"
 
+#: Where a release actually is, keyed by the PRID taken off the list page. See
+#: the module docstring: the href on the list page points somewhere else.
+DETAIL_URL = "https://pib.gov.in/PressReleasePage.aspx?PRID={prid}"
+PRID = re.compile(r"PRID=(\d+)", re.I)
+
+#: The release body on PressReleasePage.aspx. Checked first because the older
+#: class-name match picks up navigation on the pages that lack it.
+BODY_ID = "PdfDiv"
+
 # Ministries whose releases usually describe a scheme rather than a bare notice.
 YOJANA_HINTS = (
     "yojana", "scheme", "subsidy", "pension", "beneficiar", "awas",
@@ -35,6 +61,12 @@ YOJANA_HINTS = (
 NAUKRI_HINTS = ("recruitment", "vacanc", "appointment", "posts", "examination")
 RULE_HINTS = ("amendment", "rules", "notified", "act,", "regulation", "guidelines")
 MAX_ITEMS = 25
+
+#: A real release runs to thousands of characters. The Hindi shell page that
+#: broke this scraper had about 3,000 of navigation, of which roughly 400
+#: survived stripping, so this is set well above a menu and well below a
+#: genuine release.
+MIN_BODY_CHARS = 600
 
 
 class PIBScraper(BaseScraper):
@@ -75,12 +107,15 @@ class PIBScraper(BaseScraper):
 
         for a in soup.find_all("a", href=True):
             href = a["href"]
-            if "PressRelea" not in href and "PRID" not in href:
+            # The PRID is the only part of the href worth keeping — the page it
+            # names carries no release. See the module docstring.
+            prid = PRID.search(href)
+            if prid is None:
                 continue
             title = a.get_text(" ", strip=True)
             if len(title) < 20:
                 continue
-            url = urljoin(BASE, href)
+            url = DETAIL_URL.format(prid=prid.group(1))
             if url in seen:
                 continue
             seen.add(url)
@@ -108,7 +143,8 @@ class PIBScraper(BaseScraper):
         page_text = soup.get_text(" ", strip=True)
 
         container = (
-            soup.find("div", class_=re.compile("innner-page-main-about-us-content|release", re.I))
+            soup.find(id=BODY_ID)
+            or soup.find("div", class_=re.compile("innner-page-main-about-us-content", re.I))
             or soup.find("main")
             or soup.body
         )
@@ -116,7 +152,13 @@ class PIBScraper(BaseScraper):
             return None
 
         body = self.clean_text(container.get_text("\n", strip=True))
-        if len(body) < 120:
+        if len(body) < MIN_BODY_CHARS:
+            # A shell page rather than a release. Returning None here is what
+            # stops the navigation menu being published as a news item.
+            log.warning(
+                "pib: %s had only %d characters of body — skipping",
+                link["url"], len(body),
+            )
             return None
 
         title = link["title"]

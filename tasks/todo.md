@@ -134,10 +134,19 @@ corrected and the 178 unsummarised NTA rows were moved.
       alongside spend and requests, and surfaced in `/api/admin/pending-count`.
 
 ## Follow-ups this milestone surfaced
-- [ ] **PIB is degraded** — the Akamai bypass still works (126 KB fetched), but
-      `allRel.aspx` now has 1 press-release anchor among 125, so the scraper
-      returns a navigation label as an entry. The list is no longer
-      server-rendered there.
+- [x] **PIB fixed.** My first diagnosis was wrong: the list page is fine — it
+      yields correct English titles and ministries. The breakage was one link
+      behind it. `allRel.aspx` points at `PressReleaseDetail.aspx`, a JavaScript
+      shell whose only heading is the "Other Press Releases" menu, and the AI
+      dutifully summarised that menu 24 times over. All 24 stored PIB entries
+      were the same nav page under different PRIDs; four were live in the feed.
+      The release is at `PressReleasePage.aspx` with the same PRID, so the URL is
+      rebuilt and the body read from `#PdfDiv`. A minimum body length now stops
+      a shell page ever being published as news. Artefacts deleted, re-scraped
+      clean with real titles, ministries and dates.
+      Note: `allRel.aspx` serves the current day only — its date dropdowns are a
+      dead ASP.NET postback, verified by posting a valid `__VIEWSTATE` for
+      several past dates and getting identical results.
 - [ ] **SSC is thin, not broken** — its API lists 11 Selection Post
       advertisements total, one inside the 400-day window. The wider SSC notice
       board is still uncovered.

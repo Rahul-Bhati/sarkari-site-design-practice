@@ -128,6 +128,97 @@ class TestPIBParsing:
         html = '<a href="/PressReleasePage.aspx?PRID=1">Read</a>'
         assert PIBScraper()._parse_list(html) == []
 
+    def test_the_lists_own_href_is_not_followed(self):
+        # allRel.aspx links to PressReleaseDetail.aspx, which serves a
+        # JavaScript shell with no release on it. Only the PRID is usable.
+        # Nested as PIB nests it: releases sit in a list under their ministry.
+        html = ('<h3>Ministry of Health and Family Welfare</h3>'
+                '<ul><li><a href="/PressReleaseDetail.aspx?PRID=2311769">'
+                'Union Health Ministry Commemorates World Patient Safety Day 2026'
+                '</a></li></ul>')
+        links = PIBScraper()._parse_list(html)
+        assert len(links) == 1
+        assert links[0]["url"] == (
+            "https://pib.gov.in/PressReleasePage.aspx?PRID=2311769"
+        )
+        assert "PressReleaseDetail" not in links[0]["url"]
+        assert links[0]["ministry"] == "Ministry of Health and Family Welfare"
+
+    def test_both_detail_url_shapes_collapse_to_one_entry(self):
+        # The same release reached by either href is one release.
+        html = ('<a href="/PressReleaseDetail.aspx?PRID=99">'
+                'A release title long enough to be accepted here</a>'
+                '<a href="/PressReleasePage.aspx?PRID=99">'
+                'A release title long enough to be accepted here</a>')
+        assert len(PIBScraper()._parse_list(html)) == 1
+
+    # --- detail pages -------------------------------------------------
+
+    LINK = {
+        "url": "https://pib.gov.in/PressReleasePage.aspx?PRID=2311769",
+        "title": "Union Health Ministry Commemorates World Patient Safety Day 2026",
+        "ministry": "Ministry of Health and Family Welfare",
+    }
+
+    def _release(self, body: str, posted: str = "Posted On: 18 SEP 2026 8:07AM by PIB Delhi") -> str:
+        return f"""
+        <html><body>
+          <main><span>{posted}</span>
+            <div id="PdfDiv">
+              <h2>Union Health Ministry Commemorates World Patient Safety Day 2026</h2>
+              <p>{body}</p>
+            </div>
+          </main>
+        </body></html>
+        """
+
+    def test_reads_the_release_body_and_date(self):
+        entry = PIBScraper()._parse_detail(self._release("Health news. " * 80), self.LINK)
+        assert entry is not None
+        assert entry.published_date == "2026-09-18"
+        assert entry.department == "Ministry of Health and Family Welfare"
+        assert entry.state == "ALL"
+        assert "Health news." in entry.raw_text
+
+    def test_a_javascript_shell_is_not_published_as_a_release(self):
+        # The regression this scraper actually had: PressReleaseDetail.aspx
+        # returns navigation only, and its "Other Press Releases" menu heading
+        # was reaching the feed as a news item.
+        shell = """
+        <html><body>
+          <main>
+            <h2>विज्ञप्ति अन्य प्रेस विज्ञप्तियाँ</h2>
+            <div class="content-area"></div>
+            <p>JavaScript must be enabled in order for you to use the Site.</p>
+          </main>
+        </body></html>
+        """
+        assert PIBScraper()._parse_detail(shell, self.LINK) is None
+
+    def test_prefers_the_release_body_over_surrounding_navigation(self):
+        html = """
+        <html><body>
+          <main>
+            <span>Posted On: 18 SEP 2026 8:07AM by PIB Delhi</span>
+            <h2>अन्य प्रेस विज्ञप्तियाँ</h2>
+            <div id="PdfDiv">
+              <h2>The real English headline for this particular release</h2>
+              <p>%s</p>
+            </div>
+          </main>
+        </body></html>
+        """ % ("Substantive release text. " * 40)
+        entry = PIBScraper()._parse_detail(html, self.LINK)
+        assert entry is not None
+        assert entry.title == "The real English headline for this particular release"
+        assert "अन्य प्रेस" not in entry.raw_text
+
+    def test_uppercase_month_in_the_posted_on_line(self):
+        # PIB writes "18 SEP 2026", which a [A-Z][a-z]+ month pattern misses.
+        assert PIBScraper._find_date("Posted On: 18 SEP 2026 8:07AM by PIB Delhi") == (
+            "18 SEP 2026"
+        )
+
 
 class TestSSCApiParsing:
     """SSC is a JSON API, not HTML — ssc.gov.in serves an SPA with zero anchors."""
