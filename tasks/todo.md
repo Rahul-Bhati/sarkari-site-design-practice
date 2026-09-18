@@ -147,9 +147,22 @@ corrected and the 178 unsummarised NTA rows were moved.
       Note: `allRel.aspx` serves the current day only — its date dropdowns are a
       dead ASP.NET postback, verified by posting a valid `__VIEWSTATE` for
       several past dates and getting identical results.
-- [ ] **SSC is thin, not broken** — its API lists 11 Selection Post
-      advertisements total, one inside the 400-day window. The wider SSC notice
-      board is still uncovered.
+- [x] **SSC widened: 1 entry → 124.** It was never broken, just pointed at the
+      smallest of three feeds. The other two are not in the JS bundle at all —
+      the main bundle names 53 `admin/5.1/*` paths and none is the notice board,
+      and the whole `general-website` namespace is absent from it. Loading the
+      homepage in a browser and reading the network tab found both in one go.
+      - `general-website/portal/notice-boards` — 695 records, newest first,
+        every one with a PDF. 120 kept inside a 180-day window.
+      - `admin/5.1/liveExams` — the only feed with a deadline anyone can still
+        act on. Three exams open now: CAPF (30 Sep), CHSL (7 Oct), JE (22 Sep).
+      - The old advertisements feed stays; it is the only place the Selection
+        Post phases appear.
+      Two traps: `limit` is capped at 10 server-side (asking for 200 returns a
+      response with no `data` key at all), and attachment paths arrive with
+      Windows separators and must go through `/api/attachment/` — the bare
+      `/uploads/...` path answers **200 with the SPA shell**, so a naive URL
+      silently stores an 80 KB HTML page as the notice PDF.
 
 ## Known blocked (do not attempt)
 

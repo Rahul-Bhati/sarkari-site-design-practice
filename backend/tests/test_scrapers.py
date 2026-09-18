@@ -273,6 +273,128 @@ class TestSSCApiParsing:
         assert e is not None
         assert e.deadline is None
 
+    # --- notice board -------------------------------------------------
+
+    NOTICE = {
+        "id": "wdh6atwix315qq5kwjdos",
+        "headline": "Grade 'C' Stenographers Examination, 2025 : Uploading of Final Answer Key",
+        "examId": "q5zvwlkwna3s17u",
+        "redirectUrl": "",
+        "createdAt": "2026-09-17T12:42:07.766Z",
+        "attachments": [{
+            "fileName": "writeup_finalanswerkey_17092026.pdf",
+            "type": "application/pdf",
+            "path": "uploads\\masterData\\NoticeBoards\\writeup_finalanswerkey_17092026.pdf",
+        }],
+    }
+
+    def test_notice_becomes_an_entry(self):
+        e = SSCScraper()._notice_entry(self.NOTICE)
+        assert e is not None
+        assert e.title.startswith("Grade 'C' Stenographers")
+        # Results and answer keys, not vacancies — the AI promotes the ones
+        # that really are recruitment.
+        assert e.category == "notice"
+        assert e.published_date == "2026-09-17"
+        assert e.department == "Staff Selection Commission"
+
+    def test_attachment_path_is_translated_into_a_url(self):
+        # SSC returns Windows separators, and the file is served through the
+        # API. The bare /uploads/... path answers 200 with the SPA shell, so a
+        # naive URL yields an 80 KB HTML page instead of the PDF.
+        url = SSCScraper._attachment_url(self.NOTICE)
+        assert url == (
+            "https://ssc.gov.in/api/attachment/uploads/masterData/NoticeBoards/"
+            "writeup_finalanswerkey_17092026.pdf"
+        )
+        assert "\\" not in url
+
+    def test_the_document_is_the_link(self):
+        e = SSCScraper()._notice_entry(self.NOTICE)
+        assert e.original_url == e.pdf_url
+        assert e.original_url.endswith(".pdf")
+
+    def test_falls_back_to_the_redirect_then_to_an_anchor(self):
+        no_file = {k: v for k, v in self.NOTICE.items() if k != "attachments"}
+        assert SSCScraper._attachment_url(no_file) is None
+
+        redirected = {**no_file, "redirectUrl": "https://ssc.gov.in/some/page"}
+        assert SSCScraper()._notice_entry(redirected).original_url == (
+            "https://ssc.gov.in/some/page"
+        )
+
+        bare = SSCScraper()._notice_entry(no_file)
+        assert bare.original_url.endswith(f"#{self.NOTICE['id']}")
+        assert bare.pdf_url is None
+
+    @pytest.mark.parametrize(
+        "record", [{"id": "x", "headline": ""}, {"id": "", "headline": "Something"}, {}]
+    )
+    def test_skips_incomplete_notices(self, record):
+        assert SSCScraper()._notice_entry(record) is None
+
+    # --- live exams ---------------------------------------------------
+
+    EXAM = {
+        "id": "ja7db5slcapf2026",
+        "examCode": "CAPF",
+        "displayExamCode": "CAPF",
+        "examYear": "2026",
+        "examName": "Sub-Inspector in Delhi Police and Central Armed Police Forces Exam",
+        "examDescription": "SI/CPO Exam 2026",
+        "applicationStartDate": "2026-09-10",
+        "applicationEndDate": "2026-09-30T17:30:00.000Z",
+        "lastDateForFee": "2026-10-01T17:30:00.000Z",
+        "correctionStartDate": "2026-10-08",
+        "correctionEndDate": "2026-10-10T17:30:00.000Z",
+        "fee": 100,
+        "minAge": 18,
+        "maxAge": 30,
+    }
+
+    def test_a_live_exam_is_a_job_with_a_deadline(self):
+        e = SSCScraper()._exam_entry(self.EXAM)
+        assert e is not None
+        assert e.category == "naukri"
+        assert e.published_date == "2026-09-10"
+        # This is the only SSC feed with a deadline anyone can still act on.
+        assert e.deadline == "2026-09-30"
+        assert e.extra["exam_code"] == "CAPF"
+
+    def test_exam_title_carries_the_code(self):
+        # "SSC CAPF" is what candidates search for; the full name alone is not.
+        assert SSCScraper()._exam_entry(self.EXAM).title.startswith("SSC CAPF:")
+
+    def test_exam_raw_text_carries_the_practical_details(self):
+        text = SSCScraper()._exam_entry(self.EXAM).raw_text
+        assert "2026-09-30" in text
+        assert "Rs 100" in text
+        assert "18 to 30 years" in text
+        assert "corrections" in text.lower()
+
+    def test_an_exam_without_a_correction_window_omits_it(self):
+        exam = {k: v for k, v in self.EXAM.items() if not k.startswith("correction")}
+        assert "corrections" not in SSCScraper()._exam_entry(exam).raw_text.lower()
+
+    @pytest.mark.parametrize(
+        "record", [{"id": "x"}, {"id": "", "examName": "Something"}, {}]
+    )
+    def test_skips_incomplete_exams(self, record):
+        assert SSCScraper()._exam_entry(record) is None
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("2026-09-10", "2026-09-10"),
+            ("2026-09-30T17:30:00.000Z", "2026-09-30"),
+            ("not-a-date", None),
+            (None, None),
+            ("", None),
+        ],
+    )
+    def test_date_only_handles_dates_and_timestamps(self, value, expected):
+        assert SSCScraper._date_only(value) == expected
+
 
 class TestRajEprocParsing:
     TABLE = """

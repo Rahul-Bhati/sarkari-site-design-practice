@@ -106,7 +106,7 @@ Anything the AI scores below 0.90 confidence waits in `/admin` for review.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest    # 278 tests
+cd backend && .venv/bin/python -m pytest    # 297 tests
 cd frontend && npm run build                # type-check + build
 ```
 
@@ -123,7 +123,7 @@ What actually works today:
 | IBPS Recruitment (`ibps_recruitment`) | **Working** — 10 entries | `/index.php/recruitment/`. Hiring IBPS runs for other public bodies (BOB, BOI, MECL, RCF, PFRDA), every row with an open and close date. |
 | RRB (`rrb_secunderabad`) | **Working** — 112 entries | The 21 boards are consolidating onto `rrb.indianrailways.gov.in/<board>`, which serves identical markup for every board. Only Secunderabad is registered: a CEN is a national notice, so all 21 would mean 21 copies of each. Adding a board is one line. |
 | GeM (`gem`) | **Working** — ~50 bids/run | `/all-bids` is a shell; the listing comes from a JSON endpoint. CSRF token arrives as the `csrf_gem_cookie` cookie and must be echoed in a field named `csrf_bd_gem_nk` — the names deliberately differ, and a mismatch is a bare 403. ~47,000 live bids; we take the newest 5 pages. |
-| SSC (`ssc`) | **Working, but thin** — 1 entry | ssc.gov.in is an Angular SPA whose HTML has zero anchors, so HTML scraping cannot work; the site's own public API is used instead. That API lists only 11 Selection Post advertisements going back to 2019, and just one falls inside the 400-day window. Not a fault — but SSC's wider notice board is still uncovered. |
+| SSC (`ssc`) | **Working** — 124 entries | ssc.gov.in is an Angular SPA whose HTML has zero anchors, so three JSON feeds are used: the notice board (`general-website/portal/notice-boards`, 695 records, paged), live exams (`admin/5.1/liveExams`, the only feed with actionable deadlines), and Selection Post advertisements. The first two are absent from the JS bundle entirely and were found by watching the homepage's network traffic. `limit` is capped at 10 server-side; attachment paths come back with Windows separators and must be fetched through `/api/attachment/`, since `/uploads/...` answers 200 with the SPA shell. |
 | PIB (`pib`) | **Working** — today’s releases | Behind an Akamai WAF that fingerprints the TLS handshake, so every request goes through `curl_cffi`. `allRel.aspx` gives correct English titles and ministries, but links to `PressReleaseDetail.aspx`, a JavaScript shell with no release on it — the PRID is rebuilt into `PressReleasePage.aspx`, where the body lives in `#PdfDiv`. Serves the current day only; the date dropdowns look like a filter but the ASP.NET postback behind them is ignored. |
 | TNPSC | **Not built** — stale | Parses cleanly (293 rows) but has zero open and zero recently-closed recruitments; only one row carries a 2026 date. Structurally viable, editorially dead. |
 | Rajasthan eProc (`raj_eproc`) | **Blocked** — inactive | CAPTCHA-gated. The scraper raises rather than returning data; see the module docstring. |
