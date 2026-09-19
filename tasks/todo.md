@@ -98,16 +98,17 @@ Plan: `tasks/plan.md` · Spec: `docs/superpowers/specs/2026-09-18-jobs-source-co
         real ones). Now keys on `content_hash LIKE 'seed_hash_%'`, which no real
         scraper can produce.
 
-- [ ] **Checkpoint C** — partially met, blocked on a provider quota, not on code.
-  - [x] Scrapers: all 8 green, 691 entries collected
-  - [x] Pipeline proven for the new sources — an IBPS recruitment entry
-        summarised at 0.95 confidence, auto-approved, and is live in the feed
-  - [ ] **Blocked: Groq free tier is 200,000 tokens/day and it is spent.**
-        ~490 entries stay pending until the window resets. The app's guards are
-        requests/day (900, only ~180 used) and rupees — neither models tokens,
-        so it thought it had headroom while the real budget was gone. At ~1,800
-        tokens a summary the true ceiling is ~110/day.
-  - [ ] Decide whether to purge the 19 fabricated seed entries (see below)
+- [x] **Checkpoint C — met.**
+  - [x] Scrapers: all 8 green, 774 entries collected
+  - [x] Pipeline proven for every new source
+  - [x] Browser pass over `/feed?category=naukri`: **222 real jobs across 12
+        pages**, correct deadline badges ("3 days left" on SSC JE, which closes
+        22 Sept), and unsummarised entries showing department, publication date
+        and closing date rather than being hidden
+  - [x] The 19 fabricated seed entries are gone
+  - [x] The quota that blocked this is no longer the same wall: batching took a
+        summary from ~1,967 tokens to ~712, so a day's budget covers ~268
+        entries instead of ~99
 
 ## Publish-then-enrich (Rahul's call, 2026-09-18)
 
@@ -132,6 +133,33 @@ corrected and the 178 unsummarised NTA rows were moved.
 
 - [x] **Token-per-day guard** — `ai_daily_token_cap`, default 195,000, checked
       alongside spend and requests, and surfaced in `/api/admin/pending-count`.
+
+## Batched summarisation (Rahul's idea, 2026-09-19)
+
+Measured before building, because the size of the win decided whether it was
+worth the reliability cost. A one-notice request turned out to be ~87%
+boilerplate: JSON schema ~610 tokens, system prompt ~244, both byte-identical
+every call, against ~144 for the notice itself.
+
+**1,967 → 712 tokens per entry, a 64% saving: ~99 summaries/day becomes ~268.**
+Verified live on real entries, twice, not estimated.
+
+- Five per call, not ten. Output cannot be amortised, so ten is slow, near the
+  truncation ceiling, and loses ten entries to one bad reply. `AI_BATCH_ENTRIES`
+  overrides; 1 disables.
+- A short or malformed reply raises rather than returning fewer summaries than
+  notices — mispairing summaries to entries would be a silent, worse failure.
+- Any transient batch failure retries that group one at a time.
+- One call's tokens are split across the rows they produced. Recording the full
+  batch against each entry would have made the token accounting 5× too high,
+  and that accounting is what the cap reads.
+- Schema slimmed too: Pydantic's auto `title`/`default` keys were ~90 tokens of
+  nothing per call. The first attempt at that deleted the `title` *field* from
+  Summary, because `properties` is keyed by field name — caught by its own test.
+
+**Trap, hit twice this milestone:** the API server serves the code it started
+with. Mid-verification the cost appeared to climb to 2,417/entry; that was the
+old process, not the new code. Run it with `--reload`. Now in the README.
 
 ## Follow-ups this milestone surfaced
 - [x] **PIB fixed.** My first diagnosis was wrong: the list page is fine — it

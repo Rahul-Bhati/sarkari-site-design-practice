@@ -22,7 +22,7 @@ The default configuration costs nothing:
 | Frontend | Vercel Hobby | Free |
 | Database + auth | Supabase | 500MB |
 | Backend | Render free web service | Sleeps after 15 min idle |
-| **AI summaries** | **Groq free tier** | **No card; per-model daily quota** |
+| **AI summaries** | **Groq free tier** | **No card; ~268 summaries/day** |
 | Scheduler | GitHub Actions cron | Free (public repos) |
 | Cache | — | In-memory fallback; Upstash optional |
 | Email | Resend | 3,000/month |
@@ -103,10 +103,28 @@ curl -X POST localhost:8000/api/admin/process -H "X-Admin-Key: $ADMIN_API_KEY"
 
 Anything the AI scores below 0.90 confidence waits in `/admin` for review.
 
+**Nothing waits on the AI to become visible.** An entry from a trusted scraper
+is published as soon as it is scraped, showing the portal's own title,
+department and dates, and the summary replaces that placeholder when the queue
+reaches it. That matters because the AI budget is the scarce resource, not the
+scraping.
+
+**Summaries are batched five to a call.** A one-notice request is ~87%
+boilerplate — the JSON schema is ~610 tokens and the system prompt ~244, both
+identical every time, against ~144 for the notice — so batching pays that
+overhead once and drops the cost from ~1,967 tokens per entry to ~712. That is
+what makes ~268 summaries a day possible on the free tier instead of ~99. Set
+`AI_BATCH_ENTRIES=1` to turn it off, or higher if you are on a paid tier with
+room for longer replies.
+
+Run the backend with `--reload` while developing. Without it the API keeps
+serving the code it started with, and a change to the summariser or a scraper
+looks like it has done nothing.
+
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest    # 297 tests
+cd backend && .venv/bin/python -m pytest    # 317 tests
 cd frontend && npm run build                # type-check + build
 ```
 
