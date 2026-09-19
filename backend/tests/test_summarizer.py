@@ -15,16 +15,24 @@ from app.services.ai_provider import (
     GEMINI_FREE_RPM,
     EST_TOKENS_PER_SUMMARY,
     GROQ_FREE_TPM,
+    MAX_OUTPUT_TOKENS_BATCH,
     AnthropicProvider,
     GeminiProvider,
     GroqProvider,
     PermanentAIError,
+    SummaryProvider,
     TransientAIError,
     Usage,
     _strict_schema,
     get_provider,
 )
-from app.services.summarizer import estimate_cost_inr
+from app.services.summarizer import (
+    _chunks,
+    _entries_per_call,
+    _split_usage,
+    estimate_cost_inr,
+    summarize_group,
+)
 
 VALID = {
     "title": "SSC CGL 2026: 8,326 vacancies for graduates",
@@ -480,3 +488,138 @@ class TestTrustedSources:
             f"scrapers with no trust decision: {undecided}. Add to TRUSTED_SOURCES "
             "in summarizer.py, or to UNTRUSTED_BY_DESIGN here."
         )
+
+
+class _StubProvider(SummaryProvider):
+    """Records what it was asked for, so batching can be tested without a network."""
+
+    name = "stub"
+    batch_size = 5
+
+    def __init__(self, fail_batches: bool = False, miscount: bool = False):
+        self.fail_batches = fail_batches
+        self.miscount = miscount
+        self.single_calls = 0
+        self.batch_calls: list[int] = []
+
+    @property
+    def model(self) -> str:
+        return "stub-1"
+
+    def cost_inr(self, usage: Usage) -> float:
+        return 0.0
+
+    async def summarize(self, system: str, user: str):
+        self.single_calls += 1
+        return Summary(**VALID), Usage(100, 50)
+
+    async def summarize_batch(self, system: str, users: list[str]):
+        self.batch_calls.append(len(users))
+        if self.fail_batches:
+            raise TransientAIError("stub batch failure")
+        count = len(users) - 1 if self.miscount else len(users)
+        return [Summary(**VALID) for _ in range(count)], Usage(300, 250)
+
+
+class TestBatchGrouping:
+    def test_chunks_are_the_requested_size(self):
+        assert _chunks([1, 2, 3, 4, 5, 6, 7], 3) == [[1, 2, 3], [4, 5, 6], [7]]
+        assert _chunks([], 5) == []
+
+    def test_usage_is_split_across_the_entries_it_paid_for(self):
+        # One call's tokens cover the whole group. Recording the full amount
+        # against each row would make the daily token accounting — which the
+        # caps read — as many times wrong as the batch is large.
+        assert _split_usage(Usage(1000, 500), 5) == Usage(200, 100)
+
+    def test_a_single_entry_keeps_the_whole_usage(self):
+        assert _split_usage(Usage(1000, 500), 1) == Usage(1000, 500)
+
+    def test_config_overrides_the_provider_batch_size(self, monkeypatch):
+        provider = _StubProvider()
+        monkeypatch.setattr(settings, "ai_batch_entries", 3)
+        assert _entries_per_call(provider) == 3
+
+    def test_zero_means_use_the_provider_default(self, monkeypatch):
+        monkeypatch.setattr(settings, "ai_batch_entries", 0)
+        assert _entries_per_call(_StubProvider()) == 5
+
+    def test_batching_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setattr(settings, "ai_batch_entries", 1)
+        assert _entries_per_call(_StubProvider()) == 1
+
+
+class TestBatchFallback:
+    ENTRIES = [{"id": f"e{i}", "title": f"Notice {i}", "original_text": "text"}
+               for i in range(3)]
+
+    async def test_a_good_batch_is_one_call(self, monkeypatch):
+        stub = _StubProvider()
+        monkeypatch.setattr("app.services.summarizer.get_provider", lambda: stub)
+        summaries, usage = await summarize_group(self.ENTRIES)
+        assert len(summaries) == 3
+        assert stub.batch_calls == [3]
+        assert stub.single_calls == 0
+
+    async def test_a_failed_batch_retries_one_at_a_time(self, monkeypatch):
+        # A bad reply costs every entry in the batch, so failure must not write
+        # off the group — it falls back rather than losing five entries at once.
+        stub = _StubProvider(fail_batches=True)
+        monkeypatch.setattr("app.services.summarizer.get_provider", lambda: stub)
+        summaries, _ = await summarize_group(self.ENTRIES)
+        assert stub.batch_calls == [3]
+        assert stub.single_calls == 3
+        assert all(s is not None for s in summaries)
+
+    async def test_a_single_entry_never_goes_through_the_batch_path(self, monkeypatch):
+        stub = _StubProvider()
+        monkeypatch.setattr("app.services.summarizer.get_provider", lambda: stub)
+        await summarize_group(self.ENTRIES[:1])
+        assert stub.batch_calls == []
+        assert stub.single_calls == 1
+
+    async def test_an_empty_group_makes_no_calls(self, monkeypatch):
+        stub = _StubProvider()
+        monkeypatch.setattr("app.services.summarizer.get_provider", lambda: stub)
+        summaries, usage = await summarize_group([])
+        assert summaries == []
+        assert usage == Usage(0, 0)
+        assert stub.batch_calls == [] and stub.single_calls == 0
+
+    async def test_a_misconfigured_provider_is_not_retried_per_entry(self, monkeypatch):
+        # A bad key fails identically every time; retrying three more times
+        # just burns the attempt counters.
+        class Broken(_StubProvider):
+            async def summarize_batch(self, system, users):
+                raise PermanentAIError("bad key")
+
+        stub = Broken()
+        monkeypatch.setattr("app.services.summarizer.get_provider", lambda: stub)
+        with pytest.raises(PermanentAIError):
+            await summarize_group(self.ENTRIES)
+        assert stub.single_calls == 0
+
+    async def test_the_default_batch_implementation_just_loops(self):
+        # Providers that have not been measured must still satisfy the
+        # interface without pretending to batch.
+        stub = _StubProvider()
+        summaries, usage = await SummaryProvider.summarize_batch(
+            stub, "system", ["a", "b"]
+        )
+        assert len(summaries) == 2
+        assert stub.single_calls == 2
+        assert usage == Usage(200, 100)
+
+
+class TestGroqBatchContract:
+    def test_output_budget_grows_with_the_batch(self):
+        assert GroqProvider._output_budget(1) < GroqProvider._output_budget(5)
+
+    def test_output_budget_is_capped(self):
+        # Truncation loses the whole batch, but an unbounded request is its own
+        # failure mode.
+        assert GroqProvider._output_budget(1000) == MAX_OUTPUT_TOKENS_BATCH
+
+    def test_five_summaries_fit_the_budget(self):
+        # ~680 output tokens each, plus the JSON wrapper.
+        assert GroqProvider._output_budget(5) > 5 * 680

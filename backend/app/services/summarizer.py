@@ -149,12 +149,9 @@ async def _respect_rate_limit(provider: SummaryProvider) -> None:
     _last_call_at = time.monotonic()
 
 
-async def summarize(entry: dict[str, Any]) -> tuple[Summary, Usage]:
-    """Summarize one entry, retrying transient failures with backoff."""
-    provider = get_provider()
+def _user_message(entry: dict[str, Any]) -> str:
     raw_text = (entry.get("original_text") or entry.get("title") or "")[:MAX_RAW_CHARS]
-
-    user_message = USER_TEMPLATE.format(
+    return USER_TEMPLATE.format(
         source_name=entry.get("_source_name") or "Government portal",
         title=entry.get("title", ""),
         state=entry.get("state", "ALL"),
@@ -162,6 +159,67 @@ async def summarize(entry: dict[str, Any]) -> tuple[Summary, Usage]:
         today=datetime.now().date().isoformat(),
         raw_text=raw_text,
     )
+
+
+def _entries_per_call(provider: SummaryProvider) -> int:
+    """How many notices go into one call. Config overrides the provider."""
+    configured = settings.ai_batch_entries
+    if configured > 0:
+        return configured
+    return max(getattr(provider, "batch_size", 1), 1)
+
+
+async def summarize_group(
+    entries: list[dict[str, Any]]
+) -> tuple[list[Summary | None], Usage]:
+    """Summarize several entries in one call, falling back to one at a time.
+
+    A batch is worth attempting because the schema and system prompt dominate a
+    single-entry request. It is worth *abandoning* cleanly because a bad reply
+    costs every entry in the batch, not one — so any failure here retries the
+    entries individually rather than writing them all off.
+
+    Returns a summary per entry, with None where that entry could not be
+    summarised, so the caller can still record a failure against the right row.
+    """
+    provider = get_provider()
+    if not entries:
+        return [], Usage(0, 0)
+
+    if len(entries) > 1:
+        await _respect_rate_limit(provider)
+        try:
+            summaries, usage = await provider.summarize_batch(
+                SYSTEM_PROMPT, [_user_message(e) for e in entries]
+            )
+            return list(summaries), usage
+        except PermanentAIError:
+            raise
+        except TransientAIError as exc:
+            log.warning(
+                "batch of %d failed (%s); retrying them one at a time",
+                len(entries), exc,
+            )
+
+    results: list[Summary | None] = []
+    total_in = total_out = 0
+    for entry in entries:
+        try:
+            summary, usage = await summarize(entry)
+        except TransientAIError as exc:
+            log.warning("entry %s failed: %s", entry.get("id"), exc)
+            results.append(None)
+            continue
+        results.append(summary)
+        total_in += usage.input_tokens
+        total_out += usage.output_tokens
+    return results, Usage(total_in, total_out)
+
+
+async def summarize(entry: dict[str, Any]) -> tuple[Summary, Usage]:
+    """Summarize one entry, retrying transient failures with backoff."""
+    provider = get_provider()
+    user_message = _user_message(entry)
 
     last_error: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
@@ -268,49 +326,84 @@ async def process_pending_entries(batch_size: int | None = None) -> dict[str, An
     }
 
     for entry in entries:
-        source = entry.get("sources") or {}
-        entry["_source_name"] = source.get("name")
-        try:
-            summary, usage = await summarize(entry)
-        except Exception as exc:
-            report["failed"] += 1
-            report["errors"].append({"entry_id": entry["id"], "error": str(exc)[:300]})
-            try:
-                db().table("entries").update(
-                    {"ai_attempts": (entry.get("ai_attempts") or 0) + 1}
-                ).eq("id", entry["id"]).execute()
-            except Exception as bump_exc:
-                # Losing the attempt counter costs one wasted retry later.
-                # Letting it propagate would abandon the whole batch and lose
-                # the summaries already written, so it is only worth logging.
-                log.warning(
-                    "could not record failed attempt for %s: %s", entry["id"], bump_exc
-                )
-            if isinstance(exc, PermanentAIError):
-                # A misconfigured key fails identically for every entry; stop
-                # rather than burning the whole batch's retries on it.
-                report["errors"].append({"error": "stopping batch: provider misconfigured"})
-                break
-            continue
+        entry["_source_name"] = (entry.get("sources") or {}).get("name")
 
+    per_call = _entries_per_call(provider)
+    report["entries_per_call"] = per_call
+
+    for group in _chunks(entries, per_call):
+        try:
+            summaries, usage = await summarize_group(group)
+        except PermanentAIError as exc:
+            # A misconfigured key fails identically for every entry; stop
+            # rather than burning every remaining retry on it.
+            report["failed"] += len(group)
+            report["errors"].append({"error": f"stopping run: {exc}"[:300]})
+            _bump_attempts(group, report)
+            break
+
+        # One call's tokens cover the whole group, so charge it once and split
+        # the usage across the rows it produced. Otherwise a batch of five
+        # would be recorded as five full-price calls and the daily token
+        # accounting — which is what the caps read — would be five times wrong.
+        written = [s for s in summaries if s is not None]
+        share = _split_usage(usage, len(written))
         cost = provider.cost_inr(usage)
         report["cost_inr"] += cost
-        report["processed"] += 1
 
-        trusted = source.get("scraper_key") in TRUSTED_SOURCES
-        approve = summary.confidence > settings.ai_auto_approve_confidence and trusted
-        report["approved" if approve else "held_for_review"] += 1
+        for entry, summary in zip(group, summaries):
+            if summary is None:
+                report["failed"] += 1
+                report["errors"].append(
+                    {"entry_id": entry["id"], "error": "no summary returned"}
+                )
+                _bump_attempts([entry], report)
+                continue
 
-        _apply_summary(entry, summary, usage, cost, approve, provider)
+            report["processed"] += 1
+            trusted = (entry.get("sources") or {}).get("scraper_key") in TRUSTED_SOURCES
+            approve = summary.confidence > settings.ai_auto_approve_confidence and trusted
+            report["approved" if approve else "held_for_review"] += 1
+            _apply_summary(
+                entry, summary, share, cost / max(len(written), 1), approve, provider
+            )
 
         try:
             _check_caps()
         except DailyCapReached as exc:
-            report["errors"].append({"error": f"stopping batch: {exc}"})
+            report["errors"].append({"error": f"stopping run: {exc}"})
             break
 
     report["cost_inr"] = round(report["cost_inr"], 4)
     return report
+
+
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _split_usage(usage: Usage, count: int) -> Usage:
+    """Spread one call's tokens evenly across the entries it summarised."""
+    if count <= 1:
+        return usage
+    return Usage(
+        input_tokens=usage.input_tokens // count,
+        output_tokens=usage.output_tokens // count,
+    )
+
+
+def _bump_attempts(entries: list[dict], report: dict[str, Any]) -> None:
+    """Record a failed attempt so a poisonous entry stops being retried."""
+    for entry in entries:
+        try:
+            db().table("entries").update(
+                {"ai_attempts": (entry.get("ai_attempts") or 0) + 1}
+            ).eq("id", entry["id"]).execute()
+        except Exception as exc:
+            # Losing the counter costs one wasted retry later. Letting it
+            # propagate would abandon the run and lose summaries already
+            # written, so it is only worth logging.
+            log.warning("could not record failed attempt for %s: %s", entry["id"], exc)
 
 
 def _apply_summary(

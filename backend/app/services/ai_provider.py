@@ -21,8 +21,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.config import settings
-from app.models.entry import Summary
+from app.models.entry import Summary, SummaryBatch
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +58,28 @@ class SummaryProvider(ABC):
 
     @abstractmethod
     def cost_inr(self, usage: Usage) -> float: ...
+
+    #: Notices a provider will summarise in one call. 1 means "no batching",
+    #: which is the safe default for any provider that has not been measured.
+    batch_size: int = 1
+
+    async def summarize_batch(
+        self, system: str, users: list[str]
+    ) -> tuple[list[Summary], Usage]:
+        """Summarise several notices in one call.
+
+        The default implementation is not a batch at all — it loops, so every
+        provider satisfies the interface and only the ones where batching has
+        been verified override it.
+        """
+        summaries: list[Summary] = []
+        total_in = total_out = 0
+        for user in users:
+            summary, usage = await self.summarize(system, user)
+            summaries.append(summary)
+            total_in += usage.input_tokens
+            total_out += usage.output_tokens
+        return summaries, Usage(input_tokens=total_in, output_tokens=total_out)
 
 
 # --- Gemini ----------------------------------------------------------------
@@ -265,6 +289,13 @@ EST_TOKENS_PER_SUMMARY = 1_800
 #: which costs far more than pacing slightly slower would have.
 GROQ_TPM_HEADROOM = 0.80
 
+#: Output ceiling for a single summary. English plus Devanagari runs ~680
+#: tokens; the rest is headroom for an unusually long notice.
+MAX_OUTPUT_TOKENS = 4096
+#: Ceiling for a batched call. Truncation loses the whole batch, not one
+#: entry, so this is well clear of what `_output_budget` will ask for.
+MAX_OUTPUT_TOKENS_BATCH = 16_384
+
 
 #: Keys Pydantic emits that cost tokens and tell the model nothing.
 #:
@@ -321,6 +352,13 @@ def _strict_schema(schema: Any) -> Any:
 class GroqProvider(SummaryProvider):
     name = "groq"
 
+    #: Notices per call. Five rather than ten because output cannot be
+    #: amortised the way input can: ten summaries is ~6,800 output tokens,
+    #: which is both slow and a bigger loss if the reply is truncated or
+    #: malformed. Five captures most of the saving at a fifth of the blast
+    #: radius. Set AI_BATCH_ENTRIES=1 to turn batching off entirely.
+    batch_size = 5
+
     def __init__(self) -> None:
         if not settings.groq_api_key:
             raise PermanentAIError(
@@ -362,7 +400,7 @@ class GroqProvider(SummaryProvider):
     def model(self) -> str:
         return settings.groq_model
 
-    def _response_format(self) -> dict[str, Any]:
+    def _response_format(self, model_cls: type[BaseModel] = Summary) -> dict[str, Any]:
         if self._schema_mode == "json_object":
             return {"type": "json_object"}
         return {
@@ -370,22 +408,84 @@ class GroqProvider(SummaryProvider):
             "json_schema": {
                 "name": "summary",
                 "strict": True,
-                "schema": _strict_schema(Summary.model_json_schema()),
+                "schema": _strict_schema(model_cls.model_json_schema()),
             },
         }
 
-    def _system_prompt(self, system: str) -> str:
+    def _system_prompt(self, system: str, model_cls: type[BaseModel] = Summary) -> str:
         if self._schema_mode != "json_object":
             return system
         # json_object mode only guarantees *valid* JSON, not the right shape,
         # so the schema has to go in the prompt and Pydantic does the checking.
-        schema = json.dumps(_strict_schema(Summary.model_json_schema()))
+        schema = json.dumps(_strict_schema(model_cls.model_json_schema()))
         return (
             f"{system}\n\nRespond with a single JSON object matching this "
             f"JSON Schema exactly. No prose, no markdown fence.\n{schema}"
         )
 
     async def summarize(self, system: str, user: str) -> tuple[Summary, Usage]:
+        return await self._call(system, user, Summary, MAX_OUTPUT_TOKENS)
+
+    async def summarize_batch(
+        self, system: str, users: list[str]
+    ) -> tuple[list[Summary], Usage]:
+        """Summarise several notices in one call.
+
+        Worth doing because the fixed part of a request dominates it: the JSON
+        schema (~610 tokens) and system prompt (~244) are byte-identical every
+        time, while the notice itself is ~144. One call for five notices pays
+        that overhead once, which roughly halves tokens per entry.
+
+        Raises rather than returning a short list if the model gives back the
+        wrong number of summaries — pairing summaries to the wrong entries
+        would be far worse than failing, and the caller falls back to
+        one-at-a-time.
+        """
+        if not users:
+            return [], Usage(0, 0)
+        if len(users) == 1:
+            summary, usage = await self.summarize(system, users[0])
+            return [summary], usage
+
+        numbered = "\n\n".join(
+            f"===== NOTICE {i} of {len(users)} =====\n{u}"
+            for i, u in enumerate(users, start=1)
+        )
+        instruction = (
+            f"{system}\n\nYou are given {len(users)} notices, separated by "
+            f"'===== NOTICE n of {len(users)} ====='. Summarise every one of "
+            f"them. Return exactly {len(users)} summaries in the `summaries` "
+            "array, in the same order as the notices. Judge each notice only "
+            "on its own text."
+        )
+
+        batch, usage = await self._call(
+            instruction, numbered, SummaryBatch, self._output_budget(len(users))
+        )
+        if len(batch.summaries) != len(users):
+            raise TransientAIError(
+                f"groq returned {len(batch.summaries)} summaries for "
+                f"{len(users)} notices"
+            )
+        return batch.summaries, usage
+
+    @staticmethod
+    def _output_budget(count: int) -> int:
+        """Room for `count` summaries, with slack for the JSON wrapper.
+
+        A summary runs ~680 output tokens, and English plus Devanagari makes
+        that vary. Too small a budget truncates mid-array and loses the whole
+        batch, so this is deliberately generous.
+        """
+        return min(MAX_OUTPUT_TOKENS_BATCH, 1200 * count + 1000)
+
+    async def _call(
+        self,
+        system: str,
+        user: str,
+        model_cls: type[BaseModel],
+        max_output_tokens: int,
+    ) -> tuple[Any, Usage]:
         import groq  # noqa: PLC0415
 
         for _ in range(2):  # at most one retry, to switch into json_object mode
@@ -394,10 +494,13 @@ class GroqProvider(SummaryProvider):
                 # is tight enough that pacing needs them. See _retune.
                 raw = await self._client.chat.completions.with_raw_response.create(
                     model=self.model,
-                    max_completion_tokens=4096,
-                    response_format=self._response_format(),
+                    max_completion_tokens=max_output_tokens,
+                    response_format=self._response_format(model_cls),
                     messages=[
-                        {"role": "system", "content": self._system_prompt(system)},
+                        {
+                            "role": "system",
+                            "content": self._system_prompt(system, model_cls),
+                        },
                         {"role": "user", "content": user},
                     ],
                 )
@@ -435,7 +538,7 @@ class GroqProvider(SummaryProvider):
 
         content = choice.message.content or ""
         try:
-            parsed = Summary.model_validate_json(content)
+            parsed = model_cls.model_validate_json(content)
         except ValueError as exc:
             # Malformed or off-schema JSON — a different sample may well be
             # fine, so let the summarizer's retry loop have another go.

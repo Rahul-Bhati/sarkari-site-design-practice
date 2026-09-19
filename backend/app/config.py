@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # 0 disables the check, for paid tiers that have no daily token quota.
     ai_daily_token_cap: int = 195_000
     ai_batch_size: int = 10
+    # Notices sent to the model in a single call. The schema and system prompt
+    # are ~87% of a one-notice request and identical every time, so batching
+    # pays that overhead once and roughly halves tokens per entry. 0 means
+    # "use the provider's own default"; 1 disables batching.
+    ai_batch_entries: int = 0
     ai_auto_approve_confidence: float = 0.90
 
     # Notifications

@@ -130,3 +130,24 @@ class Summary(BaseModel):
         )
     )
     key_details: KeyDetails = Field(default_factory=KeyDetails)
+
+
+class SummaryBatch(BaseModel):
+    """Several summaries from one call.
+
+    Batching exists for a measured reason: on a single-entry call the JSON
+    schema and system prompt are ~87% of the input, and both are byte-identical
+    every time. Summarising N notices in one request pays that overhead once
+    instead of N times, which roughly doubles how many entries a free daily
+    token budget covers.
+
+    `summaries` must come back in the same order as the notices were given, one
+    per notice. The caller checks the count rather than trusting it.
+    """
+
+    summaries: list[Summary] = Field(
+        description=(
+            "One summary per numbered notice, in the same order they were "
+            "given. Return exactly as many summaries as there were notices."
+        )
+    )
