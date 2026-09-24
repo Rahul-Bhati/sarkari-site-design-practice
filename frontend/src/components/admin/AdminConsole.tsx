@@ -289,13 +289,20 @@ function ScraperHealth({ token }: { token: string }) {
                 <td className="p-3">
                   <div className="flex items-center gap-2">
                     <span
-                      aria-label={`Health: ${s.health}`}
+                      aria-label={
+                        s.stale
+                          ? `Health: ${s.health}. Stale: ${s.stale_reason}`
+                          : `Health: ${s.health}`
+                      }
                       className="size-2 shrink-0 rounded-full"
                       style={{ background: HEALTH_COLORS[s.health] }}
                     />
                     <div>
                       <div className="font-semibold text-ink">{s.name}</div>
                       <div className="text-xs text-faint">{s.scraper_key}</div>
+                      {s.stale && s.stale_reason ? (
+                        <div className="text-xs text-rule">{s.stale_reason}</div>
+                      ) : null}
                     </div>
                   </div>
                 </td>

@@ -22,6 +22,15 @@ export interface KeyDetails {
   vacancies?: number | null;
   emd_amount?: number | null;
   tender_id?: string | null;
+  post?: string | null;
+  pay?: string | null;
+  age?: string | null;
+  qualification?: string | null;
+  fee?: string | null;
+  benefit?: string | null;
+  how_to_apply?: string | null;
+  important_dates?: string | null;
+  pdf_unreadable?: boolean;
   [key: string]: unknown;
 }
 
@@ -102,6 +111,8 @@ export interface ScraperSource {
   is_active: boolean;
   registered: boolean;
   health: "green" | "yellow" | "red";
+  stale?: boolean;
+  stale_reason?: string | null;
   last_run_at: string | null;
   last_success_at: string | null;
   last_error: string | null;

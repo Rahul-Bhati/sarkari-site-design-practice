@@ -142,6 +142,12 @@ def _matches(subscriber: dict, entry: dict) -> bool:
     return True
 
 
+async def _follow_reminders() -> dict:
+    from app.services.follows import send_follow_reminders
+
+    return send_follow_reminders()
+
+
 async def _nightly_housekeeping() -> dict:
     expired = db().rpc("expire_stale_entries", {}).execute().data
     downgraded = payment.expire_lapsed_plans()
@@ -240,6 +246,13 @@ def start() -> AsyncIOScheduler | None:
         IntervalTrigger(minutes=5),
         args=["retry_whatsapp", _retry_whatsapp],
         id="retry_whatsapp",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _safe,
+        CronTrigger(hour=8, minute=0, timezone=IST),
+        args=["follow_reminders", _follow_reminders],
+        id="follow_reminders",
         max_instances=1,
     )
     scheduler.add_job(

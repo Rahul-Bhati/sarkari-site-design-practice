@@ -56,6 +56,63 @@ async def toggle_bookmark(entry_id: str, user: dict = Depends(current_user)):
     return {"bookmarked": True}
 
 
+@router.post("/follows/{entry_id}")
+async def toggle_follow(entry_id: str, user: dict = Depends(current_user)):
+    """Follow one notice so we can mail the reader before it closes."""
+    entry = (
+        db()
+        .table("entries")
+        .select("id, deadline, status")
+        .eq("id", entry_id)
+        .eq("status", "approved")
+        .limit(1)
+        .execute()
+    )
+    if not entry.data:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if not entry.data[0].get("deadline"):
+        raise HTTPException(status_code=400, detail="This notice has no deadline to follow")
+
+    current = (
+        db()
+        .table("notice_follows")
+        .select("entry_id")
+        .eq("user_id", user["id"])
+        .eq("entry_id", entry_id)
+        .limit(1)
+        .execute()
+    )
+    if current.data:
+        db().table("notice_follows").delete().eq("user_id", user["id"]).eq(
+            "entry_id", entry_id
+        ).execute()
+        return {"following": False}
+
+    db().table("notice_follows").insert(
+        {
+            "user_id": user["id"],
+            "entry_id": entry_id,
+            "email": user.get("email"),
+            "last_deadline": entry.data[0]["deadline"],
+        }
+    ).execute()
+    return {"following": True}
+
+
+@router.get("/follows/{entry_id}")
+async def follow_state(entry_id: str, user: dict = Depends(current_user)):
+    current = (
+        db()
+        .table("notice_follows")
+        .select("entry_id")
+        .eq("user_id", user["id"])
+        .eq("entry_id", entry_id)
+        .limit(1)
+        .execute()
+    )
+    return {"following": bool(current.data)}
+
+
 @router.get("/bookmarks")
 async def list_bookmarks(
     user: dict = Depends(current_user),

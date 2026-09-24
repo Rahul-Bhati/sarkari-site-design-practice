@@ -33,7 +33,7 @@ Plan: `tasks/scale-gaps-plan.md`
 ## Later — do not start until Checkpoint A is green
 
 - [x] **Task 6 — `supabase/migrations/009_scale_gaps.sql`** (file only, not applied)
-- [ ] **Task 7 — freshness check**
+- [x] **Task 7 — freshness check**
 - [ ] **Task 8 — durable job queue**
 - [ ] **Task 9 — notification outbox**
 - [ ] **Task 10 — keyset pagination and Hindi search vector**

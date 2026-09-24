@@ -6,9 +6,13 @@ import { toast } from "sonner";
 export function ShareButtons({
   title,
   entryId,
+  deadline,
+  vacancies,
 }: {
   title: string;
   entryId: string;
+  deadline?: string | null;
+  vacancies?: number | null;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -28,7 +32,15 @@ export function ShareButtons({
     }
   }
 
-  const whatsapp = `https://wa.me/?text=${encodeURIComponent(`${title}\n\n${url}`)}`;
+  const message = [
+    title,
+    `Last date: ${deadline || "not listed"}`,
+    typeof vacancies === "number" ? `Posts: ${vacancies}` : null,
+    url,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const whatsapp = `https://wa.me/?text=${encodeURIComponent(message)}`;
 
   return (
     <div className="mt-6 flex flex-wrap gap-3">

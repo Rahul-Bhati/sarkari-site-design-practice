@@ -21,6 +21,7 @@ from typing import Any
 from app.config import settings
 from app.database import db
 from app.models.entry import Summary
+from app.scrapers.utils.pdf_extractor import extract_pdf_text, needs_ocr
 from app.services.ai_provider import (
     PermanentAIError,
     SummaryProvider,
@@ -28,6 +29,7 @@ from app.services.ai_provider import (
     Usage,
     get_provider,
 )
+from app.services.notice_facts import keep_supported_facts, quote_in_text
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +149,49 @@ async def _respect_rate_limit(provider: SummaryProvider) -> None:
     if (wait := provider.min_interval_seconds - elapsed) > 0:
         await asyncio.sleep(wait)
     _last_call_at = time.monotonic()
+
+
+async def _attach_pdf_text(entry: dict[str, Any]) -> None:
+    """Download a job or scheme PDF once, and keep its text for the summary.
+
+    A scan that yields almost no text is marked unread so we do not fetch it
+    on every later batch, and we do not invent facts from an empty file.
+    A failed download is left unmarked so the next batch can try again.
+    """
+    if entry.get("category") not in {"naukri", "yojana"}:
+        return
+    details = dict(entry.get("key_details") or {})
+    if details.get("pdf_extracted"):
+        return
+    url = entry.get("pdf_url")
+    if not url:
+        return
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            headers={"User-Agent": settings.scraper_user_agent},
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        text = extract_pdf_text(response.content)
+    except Exception as exc:
+        log.warning("pdf fetch failed for %s: %s", entry.get("id"), exc)
+        return
+
+    details["pdf_extracted"] = True
+    update: dict[str, Any] = {"key_details": details}
+    if text and not needs_ocr(text):
+        update["original_text"] = text[:50_000]
+        entry["original_text"] = update["original_text"]
+    else:
+        details["pdf_unreadable"] = True
+        update["key_details"] = details
+    entry["key_details"] = details
+    db().table("entries").update(update).eq("id", entry["id"]).execute()
 
 
 def _user_message(entry: dict[str, Any]) -> str:
@@ -327,6 +372,7 @@ async def process_pending_entries(batch_size: int | None = None) -> dict[str, An
 
     for entry in entries:
         entry["_source_name"] = (entry.get("sources") or {}).get("name")
+        await _attach_pdf_text(entry)
 
     per_call = _entries_per_call(provider)
     report["entries_per_call"] = per_call
@@ -427,7 +473,8 @@ def _apply_summary(
     provider: SummaryProvider,
 ) -> None:
     key_details = dict(entry.get("key_details") or {})
-    key_details.update({k: v for k, v in summary.key_details.model_dump().items() if v is not None})
+    supported = keep_supported_facts(summary.key_details.model_dump(), entry.get("original_text") or "")
+    key_details.update(supported)
 
     update: dict[str, Any] = {
         "title": summary.title[:500],
@@ -446,7 +493,7 @@ def _apply_summary(
     written_deadline = deadline_to_write(entry.get("deadline"), summary.deadline)
     if written_deadline:
         update["deadline"] = written_deadline
-    if summary.eligibility:
+    if summary.eligibility and quote_in_text(summary.eligibility, entry.get("original_text") or ""):
         update["eligibility"] = {"text": summary.eligibility}
     if summary.budget_or_salary and not entry.get("budget_amount"):
         update["budget_amount"] = int(summary.budget_or_salary) * 100  # INR -> paisa

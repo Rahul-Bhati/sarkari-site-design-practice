@@ -93,6 +93,14 @@ class KeyDetails(BaseModel):
     helpline: Optional[str] = None
     vacancies: Optional[int] = None
     emd_amount: Optional[int] = None  # INR
+    post: Optional[str] = None
+    pay: Optional[str] = None
+    age: Optional[str] = None
+    qualification: Optional[str] = None
+    fee: Optional[str] = None
+    benefit: Optional[str] = None
+    how_to_apply: Optional[str] = None
+    important_dates: Optional[str] = None
 
 
 class Summary(BaseModel):

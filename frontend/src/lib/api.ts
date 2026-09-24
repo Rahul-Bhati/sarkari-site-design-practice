@@ -96,6 +96,15 @@ export const api = {
       token,
     }),
 
+  followState: (id: string, token: string) =>
+    request<{ following: boolean }>(`/api/follows/${id}`, { token }),
+
+  toggleFollow: (id: string, token: string) =>
+    request<{ following: boolean }>(`/api/follows/${id}`, {
+      method: "POST",
+      token,
+    }),
+
   preferences: (token: string) =>
     request<Record<string, unknown>>("/api/preferences", { token }),
 

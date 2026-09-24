@@ -17,6 +17,7 @@ from app.models.entry import Category, Urgency
 from app.scrapers.runner import SCRAPERS, results_as_dicts, run_all, run_scraper
 from app.services import cache
 from app.services.auth import AdminIdentity, require_admin
+from app.services.freshness import source_staleness, stale_sources
 from app.config import settings
 from app.services.summarizer import (
     DailyCapReached,
@@ -209,14 +210,24 @@ async def scraper_status():
     for run in runs:
         latest.setdefault(run["source_id"], run)
 
+    now = datetime.now(timezone.utc)
     out = []
     for src in sources:
         failures = src.get("consecutive_failures") or 0
+        reason = source_staleness(src, now)
+        if reason or failures >= 3:
+            health = "red"
+        elif failures:
+            health = "yellow"
+        else:
+            health = "green"
         out.append(
             {
                 **src,
                 "registered": src["scraper_key"] in SCRAPERS,
-                "health": "red" if failures >= 3 else "yellow" if failures else "green",
+                "health": health,
+                "stale": reason is not None,
+                "stale_reason": reason,
                 "last_run": latest.get(src["id"]),
             }
         )
@@ -268,7 +279,33 @@ async def maintenance():
     expired = db().rpc("expire_stale_entries", {}).execute().data
     downgraded = payment.expire_lapsed_plans()
     cache.invalidate_feed()
-    return {"entries_expired": expired, "plans_downgraded": downgraded}
+    rows = (
+        db()
+        .table("sources")
+        .select(
+            "scraper_key, is_active, consecutive_failures, frequency_minutes, "
+            "last_success_at, last_run_at"
+        )
+        .execute()
+        .data
+        or []
+    )
+    stale = stale_sources(rows, datetime.now(timezone.utc))
+    if stale:
+        log.warning("stale sources: %s", [row["scraper_key"] for row in stale])
+    reminders: dict = {"reminded": 0, "moved": 0, "skipped": 0}
+    try:
+        from app.services.follows import send_follow_reminders
+
+        reminders = send_follow_reminders()
+    except Exception as exc:
+        log.warning("follow reminders skipped: %s", exc)
+    return {
+        "entries_expired": expired,
+        "plans_downgraded": downgraded,
+        "stale_sources": stale,
+        "follow_reminders": reminders,
+    }
 
 
 @router.get("/pending-count")

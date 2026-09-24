@@ -354,9 +354,10 @@ class TestStrictSchema:
         # proportion and nobody notices until the queue stalls.
         import json
         size = len(json.dumps(_strict_schema(Summary.model_json_schema())))
-        # Currently ~2,200. The ceiling leaves room for a field or two without
-        # being so tight that unrelated edits trip it.
-        assert size < 2600, f"schema grew to {size} characters"
+        # Currently ~2,790 after the vacancy and scheme detail fields. The
+        # ceiling leaves room for a field or two without being so tight that
+        # unrelated edits trip it.
+        assert size < 3000, f"schema grew to {size} characters"
 
     def test_a_title_the_model_needs_is_not_a_casualty(self):
         # The `title` *property* of Summary is a real field and must survive the
@@ -447,6 +448,8 @@ class TestGeminiSchemaCompatibility:
         nested = self._converted()["properties"]["key_details"]
         assert set(nested["properties"]) == {
             "application_link", "helpline", "vacancies", "emd_amount",
+            "post", "pay", "age", "qualification", "fee", "benefit",
+            "how_to_apply", "important_dates",
         }
 
     def test_only_the_non_nullable_fields_are_required(self):
