@@ -10,7 +10,7 @@ import pytest
 from app.scrapers.base import BaseScraper, RawEntry, ScraperError
 from app.scrapers.base_notice import NoticeBoard, NoticeBoardScraper
 from app.scrapers.sources import ibps
-from app.scrapers.sources.gem import GeMScraper
+from app.scrapers.sources.gem import SAFETY_MAX_PAGES, GeMScraper, pages_to_take
 from app.scrapers.sources.ibps import IBPSRecruitmentScraper, IBPSUpdatesScraper
 from app.scrapers.sources.nta import NTAScraper
 from app.scrapers.sources.pib import PIBScraper
@@ -459,6 +459,16 @@ class TestRajEprocParsing:
     def test_detects_the_captcha_gate(self):
         assert RajasthanEProcScraper._is_captcha_gated("<p>Enter Captcha to search</p>")
         assert not RajasthanEProcScraper._is_captcha_gated(self.TABLE)
+
+
+class TestGeMPages:
+    def test_stops_on_the_first_fully_known_page(self):
+        pages = [["new-a"], ["known-b", "known-c"], ["new-d"]]
+        assert pages_to_take(pages, {"known-b", "known-c"}) == 2
+
+    def test_stops_at_the_safety_cap_when_every_page_is_new(self):
+        pages = [[f"bid-{i}"] for i in range(SAFETY_MAX_PAGES + 10)]
+        assert pages_to_take(pages, set()) == SAFETY_MAX_PAGES
 
 
 class TestGeMParsing:

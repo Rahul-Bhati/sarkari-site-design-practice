@@ -3,8 +3,8 @@
 For each registered scraper:
   1. open a `scraper_runs` row
   2. call `scrape()`
-  3. drop entries whose content_hash already exists
-  4. insert the rest with status='pending'
+  3. update a stored row when the same URL comes back with new facts
+  4. insert the rest, publishing trusted sources immediately
   5. close the run row with counts, and update source health
 
 One scraper failing never stops the others — each is wrapped individually and
@@ -29,7 +29,8 @@ from app.scrapers.sources.raj_eproc import RajasthanEProcScraper
 from app.scrapers.sources.rrb import RRBSecunderabadScraper
 from app.scrapers.sources.sbi import SBIScraper
 from app.scrapers.sources.ssc import SSCScraper
-from app.scrapers.utils.dedup import existing_hashes
+from app.scrapers.identity import plan_persist
+from app.scrapers.utils.dedup import existing_notices
 from app.services.summarizer import TRUSTED_SOURCES
 
 log = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class RunResult:
     entries_found: int = 0
     entries_new: int = 0
     entries_duplicate: int = 0
+    entries_updated: int = 0
     error: str | None = None
     duration_seconds: float = 0.0
 
@@ -99,10 +101,12 @@ async def run_scraper(source_key: str) -> RunResult:
     try:
         raw = await asyncio.wait_for(scraper_cls().scrape(), timeout=SCRAPER_TIMEOUT_SECONDS)
         result.entries_found = len(raw)
-        new, dupes = _persist(
+        new, dupes, updated = _persist(
             scraper_cls(), source_id, raw, trusted=source_key in TRUSTED_SOURCES
         )
-        result.entries_new, result.entries_duplicate = new, dupes
+        result.entries_new = new
+        result.entries_duplicate = dupes
+        result.entries_updated = updated
         _mark_source_success(source, new)
     except Exception as exc:
         result.status = "failed"
@@ -128,34 +132,30 @@ async def run_scraper(source_key: str) -> RunResult:
 
 def _persist(
     scraper: BaseScraper, source_id: int, raw: list[RawEntry], trusted: bool = False
-) -> tuple[int, int]:
-    """Insert new entries, skipping ones we already have. Returns (new, duplicate)."""
+) -> tuple[int, int, int]:
+    """Insert new entries and patch changed ones. Returns (new, duplicate, updated)."""
     if not raw:
-        return 0, 0
+        return 0, 0, 0
 
-    # De-dupe within this batch first — portals often list the same notice twice.
-    by_hash: dict[str, RawEntry] = {}
-    in_batch_dupes = 0
-    for entry in raw:
-        h = scraper.content_hash(entry)
-        if h in by_hash:
-            in_batch_dupes += 1
-            continue
-        by_hash[h] = entry
+    hashed = [(scraper.content_hash(entry), entry) for entry in raw]
+    stored = existing_notices(source_id, [entry.original_url for entry in raw])
+    plan = plan_persist(hashed, stored)
 
-    known = existing_hashes(list(by_hash))
-    fresh = {h: e for h, e in by_hash.items() if h not in known}
-    duplicates = in_batch_dupes + len(known)
+    updated = 0
+    for change in plan.updates:
+        fields = {key: value for key, value in change.items() if key != "id"}
+        db().table("entries").update(fields).eq("id", change["id"]).execute()
+        updated += 1
 
-    if not fresh:
-        return 0, duplicates
+    if not plan.inserts:
+        return 0, plan.duplicates, updated
 
-    rows = [_to_row(source_id, h, e, trusted) for h, e in fresh.items()]
+    rows = [_to_row(source_id, content_hash, entry, trusted) for content_hash, entry in plan.inserts]
     # ignore_duplicates guards the race where two runs overlap.
     res = db().table("entries").upsert(rows, on_conflict="content_hash", ignore_duplicates=True).execute()
     inserted = len(res.data or [])
-    duplicates += len(rows) - inserted
-    return inserted, duplicates
+    duplicates = plan.duplicates + len(rows) - inserted
+    return inserted, duplicates, updated
 
 
 def _to_row(source_id: int, content_hash: str, entry: RawEntry, trusted: bool) -> dict:

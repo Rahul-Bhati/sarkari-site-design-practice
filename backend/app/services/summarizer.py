@@ -406,6 +406,18 @@ def _bump_attempts(entries: list[dict], report: dict[str, Any]) -> None:
             log.warning("could not record failed attempt for %s: %s", entry["id"], exc)
 
 
+def deadline_to_write(existing: str | None, suggested: str | None) -> str | None:
+    """The deadline to store, or None to leave the column alone.
+
+    A date the scraper already took from the portal is the one we show.
+    The model may fill a deadline only when the portal did not.
+    """
+    if (existing or "").strip():
+        return None
+    suggested = (suggested or "").strip()
+    return suggested or None
+
+
 def _apply_summary(
     entry: dict,
     summary: Summary,
@@ -431,8 +443,9 @@ def _apply_summary(
         "ai_processed_at": datetime.now(timezone.utc).isoformat(),
         "ai_attempts": (entry.get("ai_attempts") or 0) + 1,
     }
-    if summary.deadline:
-        update["deadline"] = summary.deadline
+    written_deadline = deadline_to_write(entry.get("deadline"), summary.deadline)
+    if written_deadline:
+        update["deadline"] = written_deadline
     if summary.eligibility:
         update["eligibility"] = {"text": summary.eligibility}
     if summary.budget_or_salary and not entry.get("budget_amount"):

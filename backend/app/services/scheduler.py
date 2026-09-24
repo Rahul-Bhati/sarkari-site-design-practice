@@ -15,7 +15,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import settings
 from app.database import db
-from app.scrapers.runner import run_scraper
+from app.scrapers.runner import SCRAPERS, run_scraper
 from app.services import cache, notifier, payment, whatsapp
 from app.services.summarizer import DailyCapReached, process_pending_entries
 
@@ -153,6 +153,35 @@ async def _retry_whatsapp() -> dict:
     return {"retried": await whatsapp.retry_failed()}
 
 
+def jobs_for_sources(sources: list[dict], registered: set[str]) -> list[tuple[str, int]]:
+    """One (scraper_key, minutes) pair per active source that has a class."""
+    jobs: list[tuple[str, int]] = []
+    for row in sources:
+        key = row.get("scraper_key")
+        if not row.get("is_active", True) or key not in registered:
+            continue
+        minutes = row.get("frequency_minutes") or 60
+        jobs.append((key, int(minutes)))
+    return jobs
+
+
+def _scrape_intervals() -> dict[str, int]:
+    """Intervals from `sources`, or every registered scraper when the read fails."""
+    try:
+        rows = (
+            db()
+            .table("sources")
+            .select("scraper_key, frequency_minutes, is_active")
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        log.warning("scheduler could not read sources, using defaults: %s", exc)
+        return {key: SCRAPE_INTERVALS.get(key, 60) for key in SCRAPERS}
+    return dict(jobs_for_sources(rows, set(SCRAPERS)))
+
+
 def start() -> AsyncIOScheduler | None:
     global _scheduler
     if not settings.scheduler_enabled:
@@ -163,7 +192,7 @@ def start() -> AsyncIOScheduler | None:
 
     scheduler = AsyncIOScheduler(timezone=IST)
 
-    for source_key, minutes in SCRAPE_INTERVALS.items():
+    for source_key, minutes in _scrape_intervals().items():
         scheduler.add_job(
             _safe,
             IntervalTrigger(minutes=minutes, jitter=120),

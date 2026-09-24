@@ -30,6 +30,7 @@ from app.services.summarizer import (
     _chunks,
     _entries_per_call,
     _split_usage,
+    deadline_to_write,
     estimate_cost_inr,
     summarize_group,
 )
@@ -623,3 +624,16 @@ class TestGroqBatchContract:
     def test_five_summaries_fit_the_budget(self):
         # ~680 output tokens each, plus the JSON wrapper.
         assert GroqProvider._output_budget(5) > 5 * 680
+
+
+class TestDeadlineToWrite:
+    def test_portal_deadline_is_left_alone(self):
+        assert deadline_to_write("2026-03-20", "2026-04-01") is None
+
+    def test_model_fills_a_missing_deadline(self):
+        assert deadline_to_write(None, "2026-04-01") == "2026-04-01"
+        assert deadline_to_write("", "2026-04-01") == "2026-04-01"
+
+    def test_blank_suggestion_writes_nothing(self):
+        assert deadline_to_write(None, None) is None
+        assert deadline_to_write(None, "  ") is None

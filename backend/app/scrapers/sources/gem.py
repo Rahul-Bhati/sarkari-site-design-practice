@@ -21,7 +21,8 @@ Two things make this awkward and are worth stating plainly:
 
 Sorted newest-first: `Bid-End-Date-Oldest` would keep re-reading the same
 closing-soon bids every run, which the dedup hash would then throw away.
-There are ~47,000 live bids, so MAX_PAGES caps how deep we go.
+There are ~47,000 live bids. A run keeps fetching newest-first pages
+until one page is entirely already stored, and never past SAFETY_MAX_PAGES.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import logging
 from typing import Any
 
 from app.scrapers.base import BaseScraper, RawEntry, ScraperError
+from app.scrapers.utils.dedup import existing_urls
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +44,27 @@ DATA_URL = f"{BASE}/all-bids-data"
 CSRF_COOKIE = "csrf_gem_cookie"
 CSRF_FIELD = "csrf_bd_gem_nk"
 
-#: 10 bids per page. Enough to catch a day's new bids without hammering them.
-MAX_PAGES = 5
+#: 10 bids per page. Walk newest-first until a page is already stored.
+#: 30 pages is the hard stop so a first run cannot crawl the whole archive.
+SAFETY_MAX_PAGES = 30
+
+
+def pages_to_take(
+    pages: list[list[str]], known: set[str], safety_max: int = SAFETY_MAX_PAGES
+) -> int:
+    """How many newest-first pages to keep.
+
+    Stops after the first page whose URLs are all already stored, and never
+    returns more than `safety_max` even when every page is new.
+    """
+    kept = 0
+    for urls in pages:
+        if kept >= safety_max:
+            break
+        kept += 1
+        if urls and set(urls) <= known:
+            break
+    return kept
 
 
 class GeMScraper(BaseScraper):
@@ -63,17 +84,21 @@ class GeMScraper(BaseScraper):
                     "the CSRF scheme has probably changed"
                 )
 
-            for page in range(1, MAX_PAGES + 1):
+            for page in range(1, SAFETY_MAX_PAGES + 1):
                 docs = await self._fetch_page(client, token, page)
                 if not docs:
                     break
+                page_urls: list[str] = []
                 for doc in docs:
                     entry = self._to_entry(doc)
                     if entry and entry.original_url not in seen:
                         seen.add(entry.original_url)
                         entries.append(entry)
+                        page_urls.append(entry.original_url)
+                if page_urls and set(page_urls) <= existing_urls(page_urls):
+                    break
 
-        log.info("gem: %d bids kept across %d pages", len(entries), MAX_PAGES)
+        log.info("gem: %d bids kept", len(entries))
         return entries
 
     # ------------------------------------------------------------------
