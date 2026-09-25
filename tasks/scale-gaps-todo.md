@@ -41,3 +41,13 @@ Plan: `tasks/scale-gaps-plan.md`
   - Files: `backend/app/services/outbox.py`, `backend/app/services/notifier.py`, `backend/app/services/scheduler.py`, `backend/app/routers/admin.py`, `backend/tests/test_outbox.py`
   - **Needs `009_scale_gaps.sql` applied before it runs live** — `notification_outbox` does not exist yet
 - [ ] **Task 10 — keyset pagination and Hindi search vector**
+  - [x] Hindi search — `011_hindi_search.sql` rewrites `search_entries` to query
+        `search_vector_hi` alongside the English vector, and returns the entry as
+        jsonb. Also fixes `RETURNS TABLE (LIKE entries, ...)`, which declared one
+        column named "like" and made every call raise.
+    - Verify: `cd backend && .venv/bin/python -m pytest tests/test_api.py -q -k Search`,
+      plus `supabase/setup_all.sql` applying clean against a stock Postgres 16
+    - Files: `supabase/migrations/011_hindi_search.sql`, `supabase/setup_all.sql`,
+      `backend/app/routers/entries.py`, `backend/tests/test_api.py`
+    - **Needs `011_hindi_search.sql` applied**
+  - [ ] Keyset pagination on `(published_at, id)`

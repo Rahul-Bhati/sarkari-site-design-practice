@@ -44,6 +44,7 @@ def _shape(row: dict[str, Any]) -> dict[str, Any]:
     row.pop("original_text", None)  # debugging field, never public
     row.pop("content_hash", None)
     row.pop("search_vector", None)
+    row.pop("search_vector_hi", None)
     return row
 
 
@@ -126,7 +127,11 @@ def _filter(
 
 
 def _search(query_text: str, categories: list[str], states: list[str], page: int, limit: int) -> dict:
-    """Full-text search with a trigram fallback, via the search_entries RPC."""
+    """Full-text search over English and Hindi, with a trigram fallback.
+
+    The RPC returns each entry as a jsonb object rather than a table row, so
+    adding a column to `entries` cannot change this call's shape.
+    """
     offset = (page - 1) * limit
     res = db().rpc(
         "search_entries",
@@ -142,18 +147,16 @@ def _search(query_text: str, categories: list[str], states: list[str], page: int
     rows = res.data or []
     total = rows[0]["total_count"] if rows else 0
 
-    # The RPC returns a flat row; re-attach the source for response parity.
-    source_ids = {r["source_id"] for r in rows if r.get("source_id")}
+    # The RPC has no join, so re-attach the source for response parity.
+    found = [dict(r["entry"]) for r in rows if r.get("entry")]
+    source_ids = {e["source_id"] for e in found if e.get("source_id")}
     sources = {}
     if source_ids:
         s = db().table("sources").select("id, name, url").in_("id", list(source_ids)).execute()
         sources = {row["id"]: row for row in (s.data or [])}
 
     entries = []
-    for row in rows:
-        row = dict(row)
-        row.pop("rank", None)
-        row.pop("total_count", None)
+    for row in found:
         row["sources"] = sources.get(row.get("source_id"))
         entries.append(_shape(row))
 

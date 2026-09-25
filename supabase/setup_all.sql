@@ -370,8 +370,110 @@ CREATE POLICY "Users can check own admin row"
   ON admin_users FOR SELECT
   USING (user_id = auth.uid());
 
--- Full-text search with a trigram fallback when tsquery finds nothing.
--- Milestone 4, Step 4.4.
+-- ==========================================================
+-- 009: queue, outbox, events, Hindi search vector
+-- ==========================================================
+-- 009: tables for the scale-gaps spec.
+
+-- A deadline change on a notice we already stored.
+CREATE TABLE entry_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  entry_id UUID NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_entry_events_entry ON entry_events(entry_id, created_at DESC);
+
+-- Cron enqueues. A worker claims a row with FOR UPDATE SKIP LOCKED.
+CREATE TABLE jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_type TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  payload JSONB NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',
+  run_after TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  locked_at TIMESTAMPTZ,
+  locked_by TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_jobs_claim ON jobs(status, run_after);
+
+-- One row per subscriber per channel per digest day. The sender drains this.
+CREATE TABLE notification_outbox (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  subscriber_id UUID NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  digest_date DATE NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (subscriber_id, channel, digest_date)
+);
+
+-- Hindi summaries are searchable without an English stemmer.
+ALTER TABLE entries ADD COLUMN search_vector_hi tsvector
+  GENERATED ALWAYS AS (
+    to_tsvector('simple', coalesce(summary_hi, ''))
+  ) STORED;
+
+CREATE INDEX idx_entries_search_hi ON entries USING gin(search_vector_hi);
+
+ALTER TABLE entry_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_outbox ENABLE ROW LEVEL SECURITY;
+
+
+-- ==========================================================
+-- 010: notice_follows
+-- ==========================================================
+-- 010: one follow per signed-in user and notice.
+
+CREATE TABLE notice_follows (
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  entry_id UUID NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+  email VARCHAR(255),
+  remind_days INTEGER NOT NULL DEFAULT 3,
+  last_deadline DATE,
+  reminded_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, entry_id)
+);
+
+CREATE INDEX idx_notice_follows_entry ON notice_follows(entry_id);
+
+ALTER TABLE notice_follows ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users manage own follows"
+  ON notice_follows FOR ALL
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+
+-- Full-text search over English and Hindi summaries, with a trigram
+-- fallback. Milestone 4, Step 4.4; Hindi added in migration 011.
+-- The Hindi summary joins the fuzzy fallback, so it needs the same trigram
+-- index the title already has.
+CREATE INDEX IF NOT EXISTS idx_entries_summary_hi_trgm
+  ON entries USING gin(summary_hi gin_trgm_ops);
+
+-- One place that decides what a search result may expose.
+CREATE OR REPLACE FUNCTION entry_public(e entries)
+RETURNS JSONB
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT to_jsonb(e)
+       - 'search_vector'
+       - 'search_vector_hi'
+       - 'original_text'
+       - 'content_hash';
+$$;
+
 CREATE OR REPLACE FUNCTION search_entries(
   q TEXT,
   categories TEXT[] DEFAULT NULL,
@@ -379,41 +481,54 @@ CREATE OR REPLACE FUNCTION search_entries(
   lim INTEGER DEFAULT 20,
   off INTEGER DEFAULT 0
 )
-RETURNS TABLE (LIKE entries, rank REAL, total_count BIGINT)
+RETURNS TABLE (entry JSONB, rank REAL, total_count BIGINT)
 LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
+  -- English stems the query; Hindi has no stock stemmer, so 'simple' only
+  -- lowercases and splits. That matches how search_vector_hi is built.
+  en_query tsquery := plainto_tsquery('english', q);
+  hi_query tsquery := plainto_tsquery('simple', q);
   fts_hits BIGINT;
 BEGIN
   SELECT count(*) INTO fts_hits
   FROM entries e
   WHERE e.status = 'approved'
-    AND e.search_vector @@ plainto_tsquery('english', q)
+    AND (e.search_vector @@ en_query OR e.search_vector_hi @@ hi_query)
     AND (categories IS NULL OR e.category::text = ANY(categories))
     AND (states IS NULL OR e.state = ANY(states));
 
   IF fts_hits > 0 THEN
     RETURN QUERY
-      SELECT e.*,
-             ts_rank(e.search_vector, plainto_tsquery('english', q)) AS rank,
+      SELECT entry_public(e),
+             -- A row matching in either language ranks on its better match,
+             -- so an English hit is not diluted by a zero Hindi score.
+             GREATEST(
+               ts_rank(e.search_vector, en_query),
+               ts_rank(e.search_vector_hi, hi_query)
+             ) AS rank,
              fts_hits AS total_count
       FROM entries e
       WHERE e.status = 'approved'
-        AND e.search_vector @@ plainto_tsquery('english', q)
+        AND (e.search_vector @@ en_query OR e.search_vector_hi @@ hi_query)
         AND (categories IS NULL OR e.category::text = ANY(categories))
         AND (states IS NULL OR e.state = ANY(states))
       ORDER BY rank DESC, e.published_at DESC NULLS LAST
       LIMIT lim OFFSET off;
   ELSE
-    -- Fuzzy fallback: trigram similarity on the title.
+    -- Fuzzy fallback for a typo or a partial word. Hindi is compared against
+    -- the Hindi summary, because the title is usually English.
     RETURN QUERY
-      SELECT e.*,
-             similarity(e.title, q) AS rank,
+      SELECT entry_public(e),
+             GREATEST(
+               similarity(e.title, q),
+               similarity(coalesce(e.summary_hi, ''), q)
+             ) AS rank,
              count(*) OVER () AS total_count
       FROM entries e
       WHERE e.status = 'approved'
-        AND e.title % q
+        AND (e.title % q OR coalesce(e.summary_hi, '') % q)
         AND (categories IS NULL OR e.category::text = ANY(categories))
         AND (states IS NULL OR e.state = ANY(states))
       ORDER BY rank DESC
@@ -421,6 +536,10 @@ BEGIN
   END IF;
 END;
 $$;
+
+COMMENT ON FUNCTION search_entries IS
+  'Full-text search over English and Hindi summaries, with a trigram fallback. '
+  'Returns the entry as jsonb so adding a column to entries cannot break it.';
 
 -- Landing page stats. Milestone 4, Step 4.3.
 CREATE OR REPLACE FUNCTION feed_stats()

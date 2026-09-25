@@ -9,7 +9,8 @@ from pydantic import ValidationError
 from app.config import settings
 from app.main import app
 from app.models.user import Channel, Frequency, SubscribeRequest
-from app.routers.entries import _csv, _shape
+from app.routers import entries as entries_router
+from app.routers.entries import _csv, _search, _shape
 
 settings.scheduler_enabled = False
 client = TestClient(app)
@@ -66,18 +67,87 @@ class TestResponseShaping:
             "original_text": "a lot of raw scraped text",
             "content_hash": "abc",
             "search_vector": "'road':1",
+            "search_vector_hi": "'रेलवे':1",
             "sources": {"id": 1, "name": "PIB", "url": "https://pib.gov.in"},
         }
         shaped = _shape(row)
         assert "original_text" not in shaped
         assert "content_hash" not in shaped
         assert "search_vector" not in shaped
+        assert "search_vector_hi" not in shaped
         assert shaped["source"]["name"] == "PIB"
 
     def test_does_not_mutate_the_input_row(self):
         row = {"id": "1", "original_text": "raw", "sources": None}
         _shape(row)
         assert "original_text" in row
+
+
+class TestSearchEnvelope:
+    """search_entries returns the entry as jsonb, not as a table row.
+
+    A composite return type broke the moment a column was added to `entries`;
+    this shape cannot. These tests pin the unwrapping.
+    """
+
+    @staticmethod
+    def _fake_db(rows, sources=()):
+        class Result:
+            def __init__(self, data):
+                self.data = data
+
+        class Table:
+            def __init__(self, data):
+                self.data = data
+
+            def __getattr__(self, _name):
+                return lambda *a, **k: self
+
+            def execute(self):
+                return Result(self.data)
+
+        class DB:
+            def rpc(self, _name, _params):
+                return Table(rows)
+
+            def table(self, _name):
+                return Table(list(sources))
+
+        return lambda: DB()
+
+    def test_unwraps_the_entry_and_reads_the_total(self, monkeypatch):
+        rows = [
+            {"entry": {"id": "e1", "title": "Railway posts", "source_id": 1}, "rank": 0.9,
+             "total_count": 7},
+            {"entry": {"id": "e2", "title": "SSC CGL", "source_id": None}, "rank": 0.4,
+             "total_count": 7},
+        ]
+        sources = [{"id": 1, "name": "RRB", "url": "https://rrb.gov.in"}]
+        monkeypatch.setattr(entries_router, "db", self._fake_db(rows, sources))
+
+        payload = _search("रेलवे", [], [], page=1, limit=20)
+
+        assert [e["id"] for e in payload["entries"]] == ["e1", "e2"]
+        assert payload["total"] == 7
+        assert payload["entries"][0]["source"]["name"] == "RRB"
+        assert payload["entries"][1]["source"] is None
+
+    def test_rank_and_total_do_not_leak_into_an_entry(self, monkeypatch):
+        rows = [{"entry": {"id": "e1", "title": "T"}, "rank": 0.9, "total_count": 1}]
+        monkeypatch.setattr(entries_router, "db", self._fake_db(rows))
+
+        entry = _search("q", [], [], page=1, limit=20)["entries"][0]
+
+        assert "rank" not in entry and "total_count" not in entry
+
+    def test_no_hits_is_an_empty_page_not_an_error(self, monkeypatch):
+        monkeypatch.setattr(entries_router, "db", self._fake_db([]))
+
+        payload = _search("zzzz", [], [], page=1, limit=20)
+
+        assert payload["entries"] == []
+        assert payload["total"] == 0
+        assert payload["has_more"] is False
 
 
 class TestValidation:
