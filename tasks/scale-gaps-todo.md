@@ -35,5 +35,9 @@ Plan: `tasks/scale-gaps-plan.md`
 - [x] **Task 6 — `supabase/migrations/009_scale_gaps.sql`** (file only, not applied)
 - [x] **Task 7 — freshness check**
 - [ ] **Task 8 — durable job queue**
-- [ ] **Task 9 — notification outbox**
+- [x] **Task 9 — notification outbox**
+  - Acceptance: one pooled select instead of one per subscriber; keywords filter before the 25 cap; a planned digest is reserved on `(subscriber_id, channel, digest_date)` so a crashed run resumes instead of resending
+  - Verify: `cd backend && .venv/bin/python -m pytest tests/test_outbox.py -q`
+  - Files: `backend/app/services/outbox.py`, `backend/app/services/notifier.py`, `backend/app/services/scheduler.py`, `backend/app/routers/admin.py`, `backend/tests/test_outbox.py`
+  - **Needs `009_scale_gaps.sql` applied before it runs live** — `notification_outbox` does not exist yet
 - [ ] **Task 10 — keyset pagination and Hindi search vector**

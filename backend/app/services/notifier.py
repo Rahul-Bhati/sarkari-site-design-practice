@@ -1,22 +1,23 @@
 """Email digests — Milestone 7.
 
-generate_digest() builds the per-subscriber payload; render_digest_html() turns
-it into an inline-CSS email; send_digests() batches the sends to stay inside
-Resend's rate limits.
+generate_digest() builds the payload for one subscriber; render_digest_html()
+turns it into an inline-CSS email. Which entries belong in a digest is decided
+in `outbox`, so a preview, a WhatsApp digest, and the queued email all apply
+the same filters in the same order.
 """
 
 from __future__ import annotations
 
-import asyncio
 import html
 import logging
 import secrets
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from app.config import settings
 from app.database import db
 from app.models.notification import Digest, DigestGroup
+from app.services.outbox import ENTRY_FIELDS, entries_for, subscriber_cutoff
 
 log = logging.getLogger(__name__)
 
@@ -30,10 +31,10 @@ CATEGORY_LABELS = {
 }
 CATEGORY_ORDER = ["tender", "naukri", "yojana", "rule", "auction", "notice"]
 
-BATCH_SIZE = 50
-BATCH_DELAY_SECONDS = 1.0
-MAX_ENTRIES_PER_DIGEST = 25
-LOOKBACK = {"daily": timedelta(days=1), "weekly": timedelta(days=7), "instant": timedelta(hours=1)}
+#: One subscriber's window, read in full so keywords can be applied before the
+#: cap. Wide enough for a weekly digest at today's publishing volume.
+POOL_LIMIT_ONE = 500
+
 
 
 #: Every deadline we publish is an Indian government date, and every reader is
@@ -59,67 +60,39 @@ def new_token() -> str:
 
 
 def generate_digest(subscriber: dict[str, Any]) -> Digest:
-    """Entries published since this subscriber's last digest, matching their filters."""
-    frequency = subscriber.get("frequency") or "weekly"
-    since = subscriber.get("last_digest_at")
-    cutoff = (
-        datetime.fromisoformat(since.replace("Z", "+00:00"))
-        if since
-        else _now() - LOOKBACK.get(frequency, timedelta(days=7))
-    )
+    """Entries published since this subscriber's last digest, matching their filters.
 
-    query = (
+    One subscriber, one query. The scheduled email path pools that read across
+    every subscriber instead — see `outbox.enqueue_digests`.
+    """
+    now = _now()
+    rows = (
         db()
         .table("entries")
-        .select("id, title, summary_en, summary_hi, category, state, deadline, "
-                "department, original_url, urgency, budget_amount, published_at")
+        .select(ENTRY_FIELDS)
         .eq("status", "approved")
-        .gte("published_at", cutoff.isoformat())
-    )
-
-    if categories := subscriber.get("categories"):
-        query = query.in_("category", categories)
-    if states := subscriber.get("states"):
-        # 'ALL' entries are central-government and relevant to every state.
-        query = query.in_("state", list({*states, "ALL"}))
-    if (min_budget := subscriber.get("min_budget")) is not None:
-        query = query.gte("budget_amount", min_budget)
-    if (max_budget := subscriber.get("max_budget")) is not None:
-        query = query.lte("budget_amount", max_budget)
-    if departments := subscriber.get("departments"):
-        query = query.in_("department", departments)
-
-    rows = (
-        query.order("urgency", desc=True)
+        .gte("published_at", subscriber_cutoff(subscriber, now).isoformat())
         .order("published_at", desc=True)
-        .limit(MAX_ENTRIES_PER_DIGEST)
+        .limit(POOL_LIMIT_ONE)
         .execute()
         .data
         or []
     )
+    return build_digest(subscriber, entries_for(subscriber, rows, now))
 
-    if keywords := subscriber.get("keywords"):
-        lowered = [k.lower() for k in keywords]
-        rows = [
-            r
-            for r in rows
-            if any(k in f"{r['title']} {r.get('summary_en', '')}".lower() for k in lowered)
-        ]
 
+def build_digest(subscriber: dict[str, Any], entries: list[dict[str, Any]]) -> Digest:
+    """Group already-chosen entries into the payload the templates render."""
     grouped: dict[str, list[dict]] = {}
-    for row in rows:
+    for row in entries:
         grouped.setdefault(row["category"], []).append(row)
-
-    groups = [
-        DigestGroup(category=c, entries=grouped[c]) for c in CATEGORY_ORDER if c in grouped
-    ]
 
     return Digest(
         subscriber_id=subscriber["id"],
         email=subscriber.get("email"),
         phone=subscriber.get("phone"),
-        frequency=frequency,
-        groups=groups,
+        frequency=subscriber.get("frequency") or "weekly",
+        groups=[DigestGroup(category=c, entries=grouped[c]) for c in CATEGORY_ORDER if c in grouped],
         unsubscribe_token=subscriber.get("unsubscribe_token") or "",
     )
 
@@ -266,52 +239,7 @@ text-decoration:none;font-weight:600;">Confirm subscription</a></p>
     return send_email(email, "Confirm your SarkariSaar subscription", body, f"Confirm: {link}")
 
 
-async def send_digests(frequency: str) -> dict[str, Any]:
-    """Build and send digests for every verified email subscriber on this cadence."""
-    subscribers = (
-        db()
-        .table("subscribers")
-        .select("*")
-        .eq("is_active", True)
-        .eq("is_verified", True)
-        .eq("frequency", frequency)
-        .in_("channel", ["email", "both"])
-        .not_.is_("email", "null")
-        .execute()
-        .data
-        or []
-    )
-
-    report = {"frequency": frequency, "subscribers": len(subscribers), "sent": 0, "skipped": 0, "failed": 0}
-
-    for batch in _chunks(subscribers, BATCH_SIZE):
-        for subscriber in batch:
-            digest = generate_digest(subscriber)
-            if digest.total == 0:
-                report["skipped"] += 1
-                continue
-            try:
-                message_id = send_email(
-                    digest.email,
-                    f"{digest.total} new government updates for you",
-                    render_digest_html(digest),
-                    render_digest_text(digest),
-                )
-                _log_notification(digest, "email", "sent", message_id)
-                db().table("subscribers").update({"last_digest_at": _now().isoformat()}).eq(
-                    "id", subscriber["id"]
-                ).execute()
-                report["sent"] += 1
-            except Exception as exc:
-                log.error("digest send failed for %s: %s", subscriber["id"], exc)
-                _log_notification(digest, "email", "failed", None, str(exc)[:500])
-                report["failed"] += 1
-        await asyncio.sleep(BATCH_DELAY_SECONDS)
-
-    return report
-
-
-def _log_notification(
+def log_notification(
     digest: Digest, channel: str, status: str, message_id: str | None, error: str | None = None
 ) -> None:
     db().table("notification_log").insert(
@@ -325,8 +253,3 @@ def _log_notification(
             "error": error,
         }
     ).execute()
-
-
-def _chunks(items: list, size: int) -> Iterable[list]:
-    for i in range(0, len(items), size):
-        yield items[i : i + size]

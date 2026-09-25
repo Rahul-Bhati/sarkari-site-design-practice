@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from app.models.notification import Digest, DigestGroup
-from app.services.notifier import _deadline_badge, render_digest_html, render_digest_text
+from app.services.notifier import (
+    _deadline_badge,
+    build_digest,
+    render_digest_html,
+    render_digest_text,
+)
 
 
 def make_digest(**kwargs) -> Digest:
@@ -99,3 +104,23 @@ class TestRendering:
     def test_daily_and_weekly_headings_differ(self):
         assert "Daily Government Update" in render_digest_html(make_digest(frequency="daily"))
         assert "Weekly Government Update" in render_digest_html(make_digest(frequency="weekly"))
+
+
+class TestBuildDigest:
+    """What the outbox drain renders from entries the plan already chose."""
+
+    def test_groups_follow_the_category_order_not_the_entry_order(self):
+        subscriber = {"id": "s1", "email": "a@b.com", "frequency": "daily"}
+        entries = [
+            {"id": "e1", "category": "notice", "state": "ALL"},
+            {"id": "e2", "category": "tender", "state": "RJ"},
+            {"id": "e3", "category": "naukri", "state": "UP"},
+        ]
+        digest = build_digest(subscriber, entries)
+        assert [g.category for g in digest.groups] == ["tender", "naukri", "notice"]
+        assert digest.total == 3
+
+    def test_no_entries_is_an_empty_digest(self):
+        digest = build_digest({"id": "s1", "email": "a@b.com"}, [])
+        assert digest.total == 0
+        assert digest.frequency == "weekly"

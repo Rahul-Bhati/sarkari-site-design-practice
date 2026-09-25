@@ -262,12 +262,28 @@ async def trigger_processing(batch_size: int = Query(10, ge=1, le=50)):
 async def send_digests(
     frequency: str = Query("weekly", pattern="^(daily|weekly)$"),
 ):
-    from app.services import notifier
+    """Queue today's digests and send what is queued.
+
+    Safe to call twice: a subscriber already queued for today is not queued
+    again, and one already sent is not resent.
+    """
+    from app.services import outbox
 
     try:
-        return await notifier.send_digests(frequency)
+        return await outbox.run_digests(frequency)
     except RuntimeError as exc:
         # Missing RESEND_API_KEY, typically.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/drain-outbox")
+async def drain_outbox():
+    """Send digests left pending by an interrupted run."""
+    from app.services import outbox
+
+    try:
+        return await outbox.drain_outbox()
+    except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

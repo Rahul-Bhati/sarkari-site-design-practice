@@ -16,7 +16,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.config import settings
 from app.database import db
 from app.scrapers.runner import SCRAPERS, run_scraper
-from app.services import cache, notifier, payment, whatsapp
+from app.services import cache, outbox, payment, whatsapp
 from app.services.summarizer import DailyCapReached, process_pending_entries
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ async def _process_pending() -> dict:
 
 
 async def _email_digest(frequency: str) -> dict:
-    return await notifier.send_digests(frequency)
+    return await outbox.run_digests(frequency)
 
 
 async def _whatsapp_digest(frequency: str) -> dict:
